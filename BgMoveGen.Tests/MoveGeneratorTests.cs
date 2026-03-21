@@ -496,3 +496,35 @@ public class PerformanceTests
             $"generate_plays averaged {usPerCall:F1}μs/call — target is <10μs");
     }
 }
+public class PythonReferenceValidation
+{
+    [Theory]
+    [InlineData(1, 1, 42)]
+    [InlineData(1, 2, 18)]
+    [InlineData(1, 3, 19)]
+    [InlineData(1, 4, 15)]
+    [InlineData(1, 5, 9)]
+    [InlineData(1, 6, 10)]
+    [InlineData(2, 2, 75)]
+    [InlineData(2, 3, 19)]
+    [InlineData(2, 4, 21)]
+    [InlineData(2, 5, 9)]
+    [InlineData(2, 6, 16)]
+    [InlineData(3, 3, 73)]
+    [InlineData(3, 4, 18)]
+    [InlineData(3, 5, 10)]
+    [InlineData(3, 6, 16)]
+    [InlineData(4, 4, 52)]
+    [InlineData(4, 5, 10)]
+    [InlineData(4, 6, 16)]
+    [InlineData(5, 5, 4)]
+    [InlineData(5, 6, 8)]
+    [InlineData(6, 6, 11)]
+    public void OpeningRoll_MatchesPythonReference(int die1, int die2, int expectedPlays)
+    {
+        var state = BoardState.Standard();
+        var plays = MoveGenerator.GeneratePlays(state, die1, die2);
+        var nonEmpty = plays.Where(p => p.Count > 0).ToList();
+        Assert.Equal(expectedPlays, nonEmpty.Count);
+    }
+}
