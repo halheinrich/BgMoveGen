@@ -50,11 +50,12 @@ public static class MoveGenerator
     }
 
     /// <summary>
-    /// Generate all legal single-checker moves for one die value.
+    /// Generate all legal single-checker moves into a caller-supplied buffer.
+    /// Returns the number of moves written. Zero heap allocations.
     /// </summary>
-    public static List<Move> SingleMoves(BoardState state, int die)
+    public static int SingleMoves(BoardState state, int die, Span<Move> buffer)
     {
-        var moves = new List<Move>();
+        int count = 0;
 
         // Must enter from bar first
         if (state.BarPlayer > 0)
@@ -66,10 +67,10 @@ public static class MoveGenerator
                 if (pointVal >= -1)
                 {
                     bool hits = pointVal == -1;
-                    moves.Add(new Move(BoardState.BarIndex, dest, die, hits));
+                    buffer[count++] = new Move(BoardState.BarIndex, dest, die, hits);
                 }
             }
-            return moves;
+            return count;
         }
 
         // Regular moves and bearing off
@@ -88,7 +89,7 @@ public static class MoveGenerator
                 if (pointVal >= -1)
                 {
                     bool hits = pointVal == -1;
-                    moves.Add(new Move(src, dest, die, hits));
+                    buffer[count++] = new Move(src, dest, die, hits);
                 }
             }
             else if (canBearOff)
@@ -96,7 +97,7 @@ public static class MoveGenerator
                 if (dest == -1)
                 {
                     // Exact roll
-                    moves.Add(new Move(src, -1, die));
+                    buffer[count++] = new Move(src, -1, die);
                 }
                 else // dest < -1, overshoot
                 {
@@ -107,11 +108,25 @@ public static class MoveGenerator
                         if (state.Points[j] > 0) { higherExists = true; break; }
                     }
                     if (!higherExists)
-                        moves.Add(new Move(src, -1, die));
+                        buffer[count++] = new Move(src, -1, die);
                 }
             }
         }
 
+        return count;
+    }
+
+    /// <summary>
+    /// Generate all legal single-checker moves for one die value.
+    /// Convenience overload that returns a List (allocates).
+    /// </summary>
+    public static List<Move> SingleMoves(BoardState state, int die)
+    {
+        Span<Move> buffer = stackalloc Move[30];
+        int count = SingleMoves(state, die, buffer);
+        var moves = new List<Move>(count);
+        for (int i = 0; i < count; i++)
+            moves.Add(buffer[i]);
         return moves;
     }
 
@@ -124,16 +139,12 @@ public static class MoveGenerator
         if (move.Source == BoardState.BarIndex)
         {
             state.BarPlayer--;
-            // Bar checker entering the board: if dest is in outer board (6-23),
-            // PlayerOutsideHome doesn't change (was counted as bar, now as outer).
-            // If dest is in home board (0-5), PlayerOutsideHome decreases.
             if (move.Dest >= 0 && move.Dest < 6)
                 state.PlayerOutsideHome--;
         }
         else
         {
             state.Points[move.Source]--;
-            // Track outside home: leaving a point outside home (6-23)
             if (move.Source >= 6)
                 state.PlayerOutsideHome--;
         }
@@ -152,7 +163,6 @@ public static class MoveGenerator
                 state.BarOpponent++;
             }
             state.Points[move.Dest]++;
-            // Track outside home: arriving at a point outside home (6-23)
             if (move.Dest >= 6)
                 state.PlayerOutsideHome++;
         }
@@ -273,17 +283,19 @@ public static class MoveGenerator
         }
 
         int die = dice[diceIndex];
-        var legal = SingleMoves(state, die);
+        Span<Move> legal = stackalloc Move[30];
+        int legalCount = SingleMoves(state, die, legal);
 
-        if (legal.Count == 0)
+        if (legalCount == 0)
         {
             // Can't use this die
             allPlays.Add(current.Snapshot());
             return;
         }
 
-        foreach (var move in legal)
+        for (int i = 0; i < legalCount; i++)
         {
+            var move = legal[i];
             ApplyMove(state, move);
             current.Add(move);
 
