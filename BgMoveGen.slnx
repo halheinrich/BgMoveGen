@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="BgMoveGen.Tests/BgMoveGen.Tests.csproj" />
+  <Project Path="BgMoveGen/BgMoveGen.csproj" />
+</Solution>
