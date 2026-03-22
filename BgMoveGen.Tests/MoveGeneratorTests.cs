@@ -296,82 +296,90 @@ public class SingleMoveTests
     }
 }
 
-public class DoublesEquivalenceTests
+public class ReferenceCorrectnessTests
 {
     /// <summary>
-    /// Convert a play to a set-comparable key: sorted set of (FrPt, |ToPt|) pairs.
+    /// Apply all moves in a play and return the board hash.
     /// </summary>
-    private static (int, int, int, int, int, int, int, int) PlayKey(Play p) => p.DeduplicationKey();
-
-    [Theory]
-    [InlineData(1)]
-    [InlineData(2)]
-    [InlineData(3)]
-    [InlineData(4)]
-    [InlineData(5)]
-    [InlineData(6)]
-    public void Doubles_NewMatchesLegacy(int die)
+    private static long ApplyAndHash(BoardState state, Play play)
     {
-        var state = BoardState.Standard();
+        for (int i = 0; i < play.Count; i++)
+            MoveGenerator.ApplyMove(state, play[i]);
 
-        // New ordered path
-        var newPlays = MoveGenerator.GenerateDoubles(state, die);
-        var newKeys = new HashSet<(int, int, int, int, int, int, int, int)>(
-            newPlays.Where(p => p.Count > 0).Select(PlayKey));
+        long hash = unchecked((long)0xcbf29ce484222325);
+        for (int i = 0; i < 26; i++)
+        {
+            hash ^= state.Points[i];
+            hash = unchecked(hash * 0x100000001b3);
+        }
 
-        // Legacy path
-        var legacyPlays = MoveGenerator.Legacy_GeneratePlays(state, die, die);
-        var legacyKeys = new HashSet<(int, int, int, int, int, int, int, int)>(
-            legacyPlays.Where(p => p.Count > 0).Select(PlayKey));
+        for (int i = play.Count - 1; i >= 0; i--)
+            MoveGenerator.UndoMove(state, play[i]);
 
-        // Same sets
-        Assert.Equal(legacyKeys.Count, newKeys.Count);
-        Assert.True(legacyKeys.SetEquals(newKeys),
-            $"Doubles {die}-{die}: legacy produced {legacyKeys.Count} unique, new produced {newKeys.Count} unique. " +
-            $"Missing from new: {legacyKeys.Except(newKeys).Count()}, extra in new: {newKeys.Except(legacyKeys).Count()}");
-    }
-}
-
-public class PythonReferenceValidation
-{
-    [Theory]
-    [InlineData(1, 1, 42)]
-    [InlineData(2, 2, 75)]
-    [InlineData(3, 3, 73)]
-    [InlineData(4, 4, 52)]
-    [InlineData(5, 5, 4)]
-    [InlineData(6, 6, 11)]
-    public void DoublesRoll_MatchesPythonReference(int die1, int die2, int expectedPlays)
-    {
-        var state = BoardState.Standard();
-        var plays = MoveGenerator.GenerateDoubles(state, die1);
-        var nonEmpty = plays.Where(p => p.Count > 0).ToList();
-        Assert.Equal(expectedPlays, nonEmpty.Count);
+        return hash;
     }
 
-    [Theory]
-    [InlineData(1, 2, 18)]
-    [InlineData(1, 3, 19)]
-    [InlineData(1, 4, 15)]
-    [InlineData(1, 5, 9)]
-    [InlineData(1, 6, 10)]
-    [InlineData(2, 3, 19)]
-    [InlineData(2, 4, 21)]
-    [InlineData(2, 5, 9)]
-    [InlineData(2, 6, 16)]
-    [InlineData(3, 4, 18)]
-    [InlineData(3, 5, 10)]
-    [InlineData(3, 6, 16)]
-    [InlineData(4, 5, 10)]
-    [InlineData(4, 6, 16)]
-    [InlineData(5, 6, 8)]
-    public void NonDoublesRoll_MatchesPythonReference(int die1, int die2, int expectedPlays)
+    private static HashSet<long> GetBoardStates(BoardState state, List<Play> plays)
     {
-        var state = BoardState.Standard();
-        var plays = MoveGenerator.GeneratePlays(state, die1, die2);
-        var nonEmpty = plays.Where(p => p.Count > 0).ToList();
-        Assert.Equal(expectedPlays, nonEmpty.Count);
+        var set = new HashSet<long>();
+        foreach (var p in plays)
+            if (p.Count > 0)
+                set.Add(ApplyAndHash(state, p));
+        return set;
     }
+
+    /// <summary>
+    /// Master correctness test: compares optimized GeneratePlays against
+    /// brute-force Reference_GeneratePlays for a collection of board/dice pairs.
+    /// Add new test cases by adding InlineData rows.
+    /// </summary>
+    [Theory]
+    // Standard opening — all 21 rolls
+    [InlineData("standard", 1, 1)]
+    [InlineData("standard", 1, 2)]
+    [InlineData("standard", 1, 3)]
+    [InlineData("standard", 1, 4)]
+    [InlineData("standard", 1, 5)]
+    [InlineData("standard", 1, 6)]
+    [InlineData("standard", 2, 2)]
+    [InlineData("standard", 2, 3)]
+    [InlineData("standard", 2, 4)]
+    [InlineData("standard", 2, 5)]
+    [InlineData("standard", 2, 6)]
+    [InlineData("standard", 3, 3)]
+    [InlineData("standard", 3, 4)]
+    [InlineData("standard", 3, 5)]
+    [InlineData("standard", 3, 6)]
+    [InlineData("standard", 4, 4)]
+    [InlineData("standard", 4, 5)]
+    [InlineData("standard", 4, 6)]
+    [InlineData("standard", 5, 5)]
+    [InlineData("standard", 5, 6)]
+    [InlineData("standard", 6, 6)]
+    public void Optimized_MatchesReference(string position, int die1, int die2)
+    {
+        var state = CreatePosition(position);
+
+        var refPlays = MoveGenerator.Reference_GeneratePlays(state, die1, die2);
+        var optPlays = MoveGenerator.GeneratePlays(state, die1, die2);
+
+        var refStates = GetBoardStates(state, refPlays);
+        var optStates = GetBoardStates(state, optPlays);
+
+        var missingFromOpt = refStates.Except(optStates).Count();
+        var extraInOpt = optStates.Except(refStates).Count();
+
+        Assert.True(refStates.SetEquals(optStates),
+            $"{position} {die1}-{die2}: ref={refStates.Count} states, opt={optStates.Count} states. " +
+            $"Missing: {missingFromOpt}, Extra: {extraInOpt}");
+    }
+
+    private static BoardState CreatePosition(string name) => name switch
+    {
+        "standard" => BoardState.Standard(),
+        "nackgammon" => BoardState.Nackgammon(),
+        _ => throw new ArgumentException($"Unknown position: {name}")
+    };
 }
 
 public class PerformanceTests
