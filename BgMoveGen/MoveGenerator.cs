@@ -281,9 +281,12 @@ public static class MoveGenerator
         var plays1 = new List<Play>();
         var plays2 = new List<Play>();
         var current = new Play();
+        var buffers = new Move[2][];
+        buffers[0] = new Move[30];
+        buffers[1] = new Move[30];
 
-        Legacy_Recurse(state, [die1, die2], 0, ref current, plays1);
-        Legacy_Recurse(state, [die2, die1], 0, ref current, plays2);
+        Legacy_Recurse(state, [die1, die2], 0, ref current, plays1, buffers);
+        Legacy_Recurse(state, [die2, die1], 0, ref current, plays2, buffers);
 
         var allPlays = new List<Play>(plays1.Count + plays2.Count);
         allPlays.AddRange(plays1);
@@ -335,8 +338,11 @@ public static class MoveGenerator
     {
         var allPlays = new List<Play>();
         var current = new Play();
+        var buffers = new Move[dice.Length][];
+        for (int i = 0; i < dice.Length; i++)
+            buffers[i] = new Move[30];
 
-        Legacy_Recurse(state, dice, 0, ref current, allPlays);
+        Legacy_Recurse(state, dice, 0, ref current, allPlays, buffers);
 
         if (allPlays.Count == 0)
             return allPlays;
@@ -357,7 +363,8 @@ public static class MoveGenerator
         int[] dice,
         int diceIndex,
         ref Play current,
-        List<Play> allPlays)
+        List<Play> allPlays,
+        Move[][] buffers)
     {
         if (diceIndex >= dice.Length)
         {
@@ -366,8 +373,7 @@ public static class MoveGenerator
         }
 
         int die = dice[diceIndex];
-        Span<Move> legal = stackalloc Move[30];
-        int legalCount = SingleMoves(state, die, legal);
+        int legalCount = SingleMoves(state, die, buffers[diceIndex]);
 
         if (legalCount == 0)
         {
@@ -377,11 +383,11 @@ public static class MoveGenerator
 
         for (int i = 0; i < legalCount; i++)
         {
-            var move = legal[i];
+            var move = buffers[diceIndex][i];
             ApplyMove(state, move);
             current.Add(move);
 
-            Legacy_Recurse(state, dice, diceIndex + 1, ref current, allPlays);
+            Legacy_Recurse(state, dice, diceIndex + 1, ref current, allPlays, buffers);
 
             current.RemoveLast();
             UndoMove(state, move);
