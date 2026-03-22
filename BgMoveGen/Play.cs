@@ -50,26 +50,27 @@ public struct Play : IEquatable<Play>
     }
 
     /// <summary>
-    /// Normalized key for deduplication: sorted (source, dest) pairs.
+    /// Normalized key for deduplication: sorted (FrPt, |ToPt|) pairs.
+    /// Used by legacy path and equivalence tests.
     /// </summary>
     public (int, int, int, int, int, int, int, int) DeduplicationKey()
     {
-        Span<(int src, int dst)> pairs = stackalloc (int, int)[Count];
+        Span<(int fr, int to)> pairs = stackalloc (int, int)[Count];
         for (int i = 0; i < Count; i++)
-            pairs[i] = (this[i].Source, this[i].Dest);
-        
+            pairs[i] = (this[i].FrPt, Math.Abs(this[i].ToPt));
+
         // Simple sort for up to 4 elements
         for (int i = 0; i < Count - 1; i++)
             for (int j = i + 1; j < Count; j++)
-                if (pairs[j].src < pairs[i].src || 
-                    (pairs[j].src == pairs[i].src && pairs[j].dst < pairs[i].dst))
+                if (pairs[j].fr > pairs[i].fr ||
+                    (pairs[j].fr == pairs[i].fr && pairs[j].to > pairs[i].to))
                     (pairs[i], pairs[j]) = (pairs[j], pairs[i]);
 
         return (
-            Count > 0 ? pairs[0].src : -99, Count > 0 ? pairs[0].dst : -99,
-            Count > 1 ? pairs[1].src : -99, Count > 1 ? pairs[1].dst : -99,
-            Count > 2 ? pairs[2].src : -99, Count > 2 ? pairs[2].dst : -99,
-            Count > 3 ? pairs[3].src : -99, Count > 3 ? pairs[3].dst : -99
+            Count > 0 ? pairs[0].fr : -99, Count > 0 ? pairs[0].to : -99,
+            Count > 1 ? pairs[1].fr : -99, Count > 1 ? pairs[1].to : -99,
+            Count > 2 ? pairs[2].fr : -99, Count > 2 ? pairs[2].to : -99,
+            Count > 3 ? pairs[3].fr : -99, Count > 3 ? pairs[3].to : -99
         );
     }
 

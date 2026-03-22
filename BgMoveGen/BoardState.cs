@@ -3,35 +3,40 @@ namespace BgMoveGen;
 /// <summary>
 /// Mutable backgammon board position.
 /// 
-/// Points[0..23]: positive = player's checkers, negative = opponent's.
-/// Index 0 = player's 1-point (bearing off destination).
-/// Index 23 = player's 24-point.
-/// Player moves from high indices toward 0.
+/// Points[0..25]: 26-element array.
+///   Points[25] = on-roll player's bar
+///   Points[1..24] = playing surface
+///   Points[0] = opponent's bar
+/// 
+/// Positive values = on-roll player's checkers.
+/// Negative values = opponent's checkers.
+/// Player moves from high indices toward low (25 → 1, bearing off past 1).
 /// 
 /// Designed for apply/undo mutation — no heap allocations during move generation.
 /// </summary>
 public class BoardState
 {
-    public const int NumPoints = 24;
-    public const int CheckersPerPlayer = 15;
-    public const int BarIndex = 24; // virtual index for bar entry
-
-    public readonly int[] Points = new int[NumPoints];
-    public int BarPlayer;
-    public int BarOpponent;
-    public int OffPlayer;
-    public int OffOpponent;
+    public readonly int[] Points = new int[26];
 
     /// <summary>
-    /// Number of player checkers outside the home board (points 7-24 + bar).
-    /// When this is 0 and BarPlayer is 0, bearing off is legal.
+    /// Highest point (1-25) with a player checker, 0 if none.
     /// Updated incrementally by ApplyMove/UndoMove.
     /// </summary>
-    public int PlayerOutsideHome;
-
-    public bool CanBearOff => BarPlayer == 0 && PlayerOutsideHome == 0;
+    public int HighPointOccupied;
 
     public BoardState() { }
+
+    /// <summary>
+    /// Recompute HighPointOccupied from scratch. Call after setting up a position.
+    /// </summary>
+    public void RecalcHighPoint()
+    {
+        HighPointOccupied = 0;
+        for (int i = 25; i >= 1; i--)
+        {
+            if (Points[i] > 0) { HighPointOccupied = i; return; }
+        }
+    }
 
     /// <summary>
     /// Deep copy.
@@ -39,128 +44,50 @@ public class BoardState
     public BoardState Copy()
     {
         var copy = new BoardState();
-        Array.Copy(Points, copy.Points, NumPoints);
-        copy.BarPlayer = BarPlayer;
-        copy.BarOpponent = BarOpponent;
-        copy.OffPlayer = OffPlayer;
-        copy.OffOpponent = OffOpponent;
-        copy.PlayerOutsideHome = PlayerOutsideHome;
+        Array.Copy(Points, copy.Points, 26);
+        copy.HighPointOccupied = HighPointOccupied;
         return copy;
-    }
-
-    /// <summary>
-    /// Recompute PlayerOutsideHome from scratch. Call after setting up a position.
-    /// </summary>
-    public void RecalcOutsideHome()
-    {
-        PlayerOutsideHome = BarPlayer;
-        for (int i = 6; i < NumPoints; i++)
-        {
-            if (Points[i] > 0)
-                PlayerOutsideHome += Points[i];
-        }
-    }
-
-    /// <summary>
-    /// Player's total pip count (distance to bear off all checkers).
-    /// </summary>
-    public int PlayerPipCount()
-    {
-        int pips = BarPlayer * 25;
-        for (int i = 0; i < NumPoints; i++)
-        {
-            if (Points[i] > 0)
-                pips += Points[i] * (i + 1);
-        }
-        return pips;
-    }
-
-    /// <summary>
-    /// Opponent's total pip count.
-    /// </summary>
-    public int OpponentPipCount()
-    {
-        int pips = BarOpponent * 25;
-        for (int i = 0; i < NumPoints; i++)
-        {
-            if (Points[i] < 0)
-                pips += Math.Abs(Points[i]) * (NumPoints - i);
-        }
-        return pips;
-    }
-
-    /// <summary>
-    /// True if no future contact is possible (pure race).
-    /// </summary>
-    public bool IsRace()
-    {
-        if (BarPlayer > 0 || BarOpponent > 0)
-            return false;
-
-        int lowestOpp = -1;
-        for (int i = 0; i < NumPoints; i++)
-        {
-            if (Points[i] < 0) { lowestOpp = i; break; }
-        }
-        if (lowestOpp == -1) return true;
-
-        int highestPlayer = -1;
-        for (int i = NumPoints - 1; i >= 0; i--)
-        {
-            if (Points[i] > 0) { highestPlayer = i; break; }
-        }
-        if (highestPlayer == -1) return true;
-
-        return highestPlayer < lowestOpp;
-    }
-
-    /// <summary>
-    /// Return a new BoardState with player/opponent swapped.
-    /// </summary>
-    public BoardState FlipPerspective()
-    {
-        var flipped = new BoardState();
-        for (int i = 0; i < NumPoints; i++)
-            flipped.Points[i] = -Points[NumPoints - 1 - i];
-        flipped.BarPlayer = BarOpponent;
-        flipped.BarOpponent = BarPlayer;
-        flipped.OffPlayer = OffOpponent;
-        flipped.OffOpponent = OffPlayer;
-        flipped.RecalcOutsideHome();
-        return flipped;
     }
 
     // ── Standard starting positions ───────────────────────────────
 
+    /// <summary>
+    /// Standard backgammon starting position.
+    /// Player's checkers: 6-pt(5), 8-pt(3), 13-pt(5), 24-pt(2)
+    /// Opponent's checkers: 19-pt(-5), 17-pt(-3), 12-pt(-5), 1-pt(-2)
+    /// </summary>
     public static BoardState Standard()
     {
         var s = new BoardState();
-        s.Points[5] = 5;
-        s.Points[7] = 3;
-        s.Points[12] = 5;
-        s.Points[23] = 2;
-        s.Points[18] = -5;
-        s.Points[16] = -3;
-        s.Points[11] = -5;
-        s.Points[0] = -2;
-        s.RecalcOutsideHome();
+        s.Points[6] = 5;
+        s.Points[8] = 3;
+        s.Points[13] = 5;
+        s.Points[24] = 2;
+        s.Points[19] = -5;
+        s.Points[17] = -3;
+        s.Points[12] = -5;
+        s.Points[1] = -2;
+        s.RecalcHighPoint();
         return s;
     }
 
+    /// <summary>
+    /// Nackgammon starting position.
+    /// </summary>
     public static BoardState Nackgammon()
     {
         var s = new BoardState();
-        s.Points[5] = 4;
-        s.Points[7] = 3;
-        s.Points[12] = 4;
-        s.Points[22] = 2;
+        s.Points[6] = 4;
+        s.Points[8] = 3;
+        s.Points[13] = 4;
         s.Points[23] = 2;
-        s.Points[18] = -4;
-        s.Points[16] = -3;
-        s.Points[11] = -4;
+        s.Points[24] = 2;
+        s.Points[19] = -4;
+        s.Points[17] = -3;
+        s.Points[12] = -4;
+        s.Points[2] = -2;
         s.Points[1] = -2;
-        s.Points[0] = -2;
-        s.RecalcOutsideHome();
+        s.RecalcHighPoint();
         return s;
     }
 }

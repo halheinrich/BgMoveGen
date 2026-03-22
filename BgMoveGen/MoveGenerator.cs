@@ -3,9 +3,10 @@ namespace BgMoveGen;
 /// <summary>
 /// High-performance legal move generation for backgammon.
 /// 
-/// Key optimization: mutable apply/undo instead of copy-per-branch.
-/// The recursive generator mutates the board state in place and reverses
-/// each move when backtracking. Zero heap allocations in the hot path.
+/// Two generation paths:
+///   - GenerateDoubles: ordered generation (rearmost-first), no dedup needed.
+///   - Legacy_GeneratePlays: original recursive approach with post-hoc dedup.
+///     Kept temporarily for equivalence testing; will be removed.
 /// 
 /// Rules enforced:
 /// - Must enter from bar before moving other checkers
@@ -16,21 +17,247 @@ namespace BgMoveGen;
 /// </summary>
 public static class MoveGenerator
 {
+    // ── Core: Apply / Undo ────────────────────────────────────────
+
+    public static void ApplyMove(BoardState state, Move move)
+    {
+        state.Points[move.FrPt]--;
+        if (move.ToPt > 0)
+        {
+            state.Points[move.ToPt]++;
+        }
+        else if (move.ToPt < 0)
+        {
+            int dest = -move.ToPt;
+            state.Points[dest] = 1;
+            state.Points[0]--;
+        }
+        // ToPt == 0: bear off, checker disappears
+
+        if (move.FrPt == state.HighPointOccupied && state.Points[move.FrPt] == 0)
+        {
+            state.HighPointOccupied = 0;
+            for (int i = move.FrPt - 1; i >= 1; i--)
+            {
+                if (state.Points[i] > 0) { state.HighPointOccupied = i; break; }
+            }
+        }
+    }
+
+    public static void UndoMove(BoardState state, Move move)
+    {
+        if (move.ToPt > 0)
+        {
+            state.Points[move.ToPt]--;
+        }
+        else if (move.ToPt < 0)
+        {
+            int dest = -move.ToPt;
+            state.Points[dest] = -1;
+            state.Points[0]++;
+        }
+
+        state.Points[move.FrPt]++;
+        if (move.FrPt > state.HighPointOccupied)
+            state.HighPointOccupied = move.FrPt;
+    }
+
+    // ── Core: Single move enumeration ─────────────────────────────
+
+    /// <summary>
+    /// Find the next legal move scanning down from prevFrPt - 1.
+    /// Returns true if a move was found. Zero heap allocations.
+    /// </summary>
+    public static bool NextMove(BoardState state, int die, int prevFrPt, out Move move)
+    {
+        move = default;
+        int start = prevFrPt - 1;
+
+        // Must enter from bar first
+        if (state.Points[25] > 0)
+        {
+            if (25 > start) return false;
+            int toPt = 25 - die;
+            if (state.Points[toPt] == -1)
+            {
+                move = new Move(25, -toPt);
+                return true;
+            }
+            else if (state.Points[toPt] >= 0)
+            {
+                move = new Move(25, toPt);
+                return true;
+            }
+            return false; // on bar but blocked
+        }
+
+        int scanStart = Math.Min(start, state.HighPointOccupied);
+        for (int frPt = scanStart; frPt >= 1; frPt--)
+        {
+            if (state.Points[frPt] <= 0)
+                continue;
+
+            int toPt = frPt <= die ? 0 : frPt - die;
+
+            if (toPt == 0)
+            {
+                if (state.HighPointOccupied <= 6)
+                {
+                    if (frPt == die || frPt == state.HighPointOccupied)
+                    {
+                        move = new Move(frPt, 0);
+                        return true;
+                    }
+                }
+            }
+            else
+            {
+                if (state.Points[toPt] == -1)
+                {
+                    move = new Move(frPt, -toPt);
+                    return true;
+                }
+                else if (state.Points[toPt] >= 0)
+                {
+                    move = new Move(frPt, toPt);
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Generate all legal single-checker moves into a caller-supplied buffer.
+    /// Ordered: highest FrPt first (canonical order).
+    /// Returns the number of moves written. Zero heap allocations.
+    /// </summary>
+    public static int SingleMoves(BoardState state, int die, Span<Move> buffer)
+    {
+        int count = 0;
+        int prevFrPt = 26;
+        while (NextMove(state, die, prevFrPt, out Move m))
+        {
+            buffer[count++] = m;
+            prevFrPt = m.FrPt;
+        }
+        return count;
+    }
+
+    /// <summary>
+    /// Convenience overload returning a List (allocates). For public API / tests.
+    /// </summary>
+    public static List<Move> SingleMoves(BoardState state, int die)
+    {
+        Span<Move> buffer = stackalloc Move[30];
+        int count = SingleMoves(state, die, buffer);
+        var moves = new List<Move>(count);
+        for (int i = 0; i < count; i++)
+            moves.Add(buffer[i]);
+        return moves;
+    }
+
+    // ── Doubles: ordered generation (no dedup needed) ─────────────
+
+    /// <summary>
+    /// Generate all legal plays for a doubles roll.
+    /// Uses canonical ordering (non-increasing FrPt via NextMove) to avoid duplicates.
+    /// If fewer than 4 dice can be used, there is exactly one result.
+    /// </summary>
+    public static List<Play> GenerateDoubles(BoardState state, int die)
+    {
+        var results = new List<Play>();
+
+        int fr1 = 26;
+        while (NextMove(state, die, fr1, out Move m1))
+        {
+            ApplyMove(state, m1);
+            int fr2 = m1.FrPt + 1;
+            bool anyAt2 = false;
+            while (NextMove(state, die, fr2, out Move m2))
+            {
+                anyAt2 = true;
+                ApplyMove(state, m2);
+                int fr3 = m2.FrPt + 1;
+                bool anyAt3 = false;
+                while (NextMove(state, die, fr3, out Move m3))
+                {
+                    anyAt3 = true;
+                    ApplyMove(state, m3);
+                    int fr4 = m3.FrPt + 1;
+                    bool anyAt4 = false;
+                    while (NextMove(state, die, fr4, out Move m4))
+                    {
+                        anyAt4 = true;
+                        var play = new Play();
+                        play.Add(m1); play.Add(m2); play.Add(m3); play.Add(m4);
+                        results.Add(play);
+                        fr4 = m4.FrPt;
+                    }
+                    if (!anyAt4 && results.Count == 0)
+                    {
+                        var play = new Play();
+                        play.Add(m1); play.Add(m2); play.Add(m3);
+                        results.Add(play);
+                    }
+                    UndoMove(state, m3);
+                    fr3 = m3.FrPt;
+                }
+                if (!anyAt3 && results.Count == 0)
+                {
+                    var play = new Play();
+                    play.Add(m1); play.Add(m2);
+                    results.Add(play);
+                }
+                UndoMove(state, m2);
+                fr2 = m2.FrPt;
+            }
+            if (!anyAt2 && results.Count == 0)
+            {
+                var play = new Play();
+                play.Add(m1);
+                results.Add(play);
+            }
+            UndoMove(state, m1);
+            fr1 = m1.FrPt;
+        }
+
+        if (results.Count == 0)
+            results.Add(new Play());
+
+        return results;
+    }
+
+    // ── Public API (doubles only for now) ─────────────────────────
+
     /// <summary>
     /// Generate all legal complete plays for a dice roll.
+    /// Currently handles doubles via ordered generation.
+    /// Non-doubles still uses legacy path.
     /// </summary>
     public static List<Play> GeneratePlays(BoardState state, int die1, int die2)
+    {
+        if (die1 == die2)
+            return GenerateDoubles(state, die1);
+        else
+            return Legacy_GeneratePlays(state, die1, die2);
+    }
+
+    // ── Legacy path (kept for equivalence testing) ────────────────
+
+    public static List<Play> Legacy_GeneratePlays(BoardState state, int die1, int die2)
     {
         List<Play> allPlays;
 
         if (die1 == die2)
         {
             int[] dice = [die1, die1, die1, die1];
-            allPlays = GenerateDoubles(state, dice);
+            allPlays = Legacy_GenerateDoubles(state, dice);
         }
         else
         {
-            allPlays = GenerateRegular(state, die1, die2);
+            allPlays = Legacy_GenerateRegular(state, die1, die2);
         }
 
         // Deduplicate
@@ -44,181 +271,23 @@ public static class MoveGenerator
         }
 
         if (unique.Count == 0)
-            unique.Add(new Play()); // empty play = no legal moves
+            unique.Add(new Play());
 
         return unique;
     }
 
-    /// <summary>
-    /// Generate all legal single-checker moves into a caller-supplied buffer.
-    /// Returns the number of moves written. Zero heap allocations.
-    /// </summary>
-    public static int SingleMoves(BoardState state, int die, Span<Move> buffer)
+    private static List<Play> Legacy_GenerateRegular(BoardState state, int die1, int die2)
     {
-        int count = 0;
-
-        // Must enter from bar first
-        if (state.BarPlayer > 0)
-        {
-            int dest = BoardState.NumPoints - die;
-            if (dest >= 0 && dest < BoardState.NumPoints)
-            {
-                int pointVal = state.Points[dest];
-                if (pointVal >= -1)
-                {
-                    bool hits = pointVal == -1;
-                    buffer[count++] = new Move(BoardState.BarIndex, dest, die, hits);
-                }
-            }
-            return count;
-        }
-
-        // Regular moves and bearing off
-        bool canBearOff = state.CanBearOff;
-
-        for (int src = 0; src < BoardState.NumPoints; src++)
-        {
-            if (state.Points[src] <= 0)
-                continue;
-
-            int dest = src - die;
-
-            if (dest >= 0)
-            {
-                int pointVal = state.Points[dest];
-                if (pointVal >= -1)
-                {
-                    bool hits = pointVal == -1;
-                    buffer[count++] = new Move(src, dest, die, hits);
-                }
-            }
-            else if (canBearOff)
-            {
-                if (dest == -1)
-                {
-                    // Exact roll
-                    buffer[count++] = new Move(src, -1, die);
-                }
-                else // dest < -1, overshoot
-                {
-                    // Only legal if no checker on a higher point in home board
-                    bool higherExists = false;
-                    for (int j = src + 1; j < 6; j++)
-                    {
-                        if (state.Points[j] > 0) { higherExists = true; break; }
-                    }
-                    if (!higherExists)
-                        buffer[count++] = new Move(src, -1, die);
-                }
-            }
-        }
-
-        return count;
-    }
-
-    /// <summary>
-    /// Generate all legal single-checker moves for one die value.
-    /// Convenience overload that returns a List (allocates).
-    /// </summary>
-    public static List<Move> SingleMoves(BoardState state, int die)
-    {
-        Span<Move> buffer = stackalloc Move[30];
-        int count = SingleMoves(state, die, buffer);
-        var moves = new List<Move>(count);
-        for (int i = 0; i < count; i++)
-            moves.Add(buffer[i]);
-        return moves;
-    }
-
-    /// <summary>
-    /// Apply a move to the board state in place. No allocation.
-    /// </summary>
-    public static void ApplyMove(BoardState state, Move move)
-    {
-        // Remove checker from source
-        if (move.Source == BoardState.BarIndex)
-        {
-            state.BarPlayer--;
-            if (move.Dest >= 0 && move.Dest < 6)
-                state.PlayerOutsideHome--;
-        }
-        else
-        {
-            state.Points[move.Source]--;
-            if (move.Source >= 6)
-                state.PlayerOutsideHome--;
-        }
-
-        // Place checker at destination
-        if (move.Dest == -1)
-        {
-            // Bearing off
-            state.OffPlayer++;
-        }
-        else
-        {
-            if (move.Hits)
-            {
-                state.Points[move.Dest] = 0; // remove opponent blot
-                state.BarOpponent++;
-            }
-            state.Points[move.Dest]++;
-            if (move.Dest >= 6)
-                state.PlayerOutsideHome++;
-        }
-    }
-
-    /// <summary>
-    /// Undo a previously applied move. Exact reverse of ApplyMove.
-    /// </summary>
-    public static void UndoMove(BoardState state, Move move)
-    {
-        // Reverse destination
-        if (move.Dest == -1)
-        {
-            state.OffPlayer--;
-        }
-        else
-        {
-            state.Points[move.Dest]--;
-            if (move.Dest >= 6)
-                state.PlayerOutsideHome--;
-
-            if (move.Hits)
-            {
-                state.Points[move.Dest] = -1; // restore opponent blot
-                state.BarOpponent--;
-            }
-        }
-
-        // Reverse source
-        if (move.Source == BoardState.BarIndex)
-        {
-            state.BarPlayer++;
-            if (move.Dest >= 0 && move.Dest < 6)
-                state.PlayerOutsideHome++;
-        }
-        else
-        {
-            state.Points[move.Source]++;
-            if (move.Source >= 6)
-                state.PlayerOutsideHome++;
-        }
-    }
-
-    // ── Private generation methods ────────────────────────────────
-
-    private static List<Play> GenerateRegular(BoardState state, int die1, int die2)
-    {
-        var allPlays = new List<Play>();
+        var plays1 = new List<Play>();
+        var plays2 = new List<Play>();
         var current = new Play();
 
-        // Try both orderings
-        int[] order1 = [die1, die2];
-        int[] order2 = [die2, die1];
+        Legacy_Recurse(state, [die1, die2], 0, ref current, plays1);
+        Legacy_Recurse(state, [die2, die1], 0, ref current, plays2);
 
-        Recurse(state, order1, 0, ref current, allPlays);
-        Recurse(state, order2, 0, ref current, allPlays);
+        var allPlays = new List<Play>(plays1.Count + plays2.Count);
+        allPlays.AddRange(plays1);
+        allPlays.AddRange(plays2);
 
         if (allPlays.Count == 0)
             return allPlays;
@@ -238,22 +307,36 @@ public static class MoveGenerator
         if (maxUsed == 1)
         {
             int maxDie = Math.Max(die1, die2);
+            // plays1 used die1 first, plays2 used die2 first
+            // 1-move plays from each list used that list's first die
             var withMax = new List<Play>();
-            foreach (var p in best)
-                if (p[0].Die == maxDie) withMax.Add(p);
+            if (die1 == maxDie)
+                foreach (var p in plays1)
+                    if (p.Count == 1) withMax.Add(p);
+            if (die2 == maxDie)
+                foreach (var p in plays2)
+                    if (p.Count == 1) withMax.Add(p);
+
             if (withMax.Count > 0)
-                return withMax;
+            {
+                // Dedup
+                var seen = new HashSet<(int, int, int, int, int, int, int, int)>();
+                var unique = new List<Play>();
+                foreach (var p in withMax)
+                    if (seen.Add(p.DeduplicationKey())) unique.Add(p);
+                return unique;
+            }
         }
 
         return best;
     }
 
-    private static List<Play> GenerateDoubles(BoardState state, int[] dice)
+    private static List<Play> Legacy_GenerateDoubles(BoardState state, int[] dice)
     {
         var allPlays = new List<Play>();
         var current = new Play();
 
-        Recurse(state, dice, 0, ref current, allPlays);
+        Legacy_Recurse(state, dice, 0, ref current, allPlays);
 
         if (allPlays.Count == 0)
             return allPlays;
@@ -269,7 +352,7 @@ public static class MoveGenerator
         return best;
     }
 
-    private static void Recurse(
+    private static void Legacy_Recurse(
         BoardState state,
         int[] dice,
         int diceIndex,
@@ -288,7 +371,6 @@ public static class MoveGenerator
 
         if (legalCount == 0)
         {
-            // Can't use this die
             allPlays.Add(current.Snapshot());
             return;
         }
@@ -299,7 +381,7 @@ public static class MoveGenerator
             ApplyMove(state, move);
             current.Add(move);
 
-            Recurse(state, dice, diceIndex + 1, ref current, allPlays);
+            Legacy_Recurse(state, dice, diceIndex + 1, ref current, allPlays);
 
             current.RemoveLast();
             UndoMove(state, move);
