@@ -229,13 +229,13 @@ public static class MoveGenerator
         return results;
     }
 
-    // ── Non-doubles: ordered generation with board-state dedup ─────
+    // ── Non-doubles: ordered generation with avoidance-based dedup ──
 
     /// <summary>
     /// Generate all legal plays for a non-doubles roll.
-    /// Single pass: iterate FrPt from rearmost down. At each FrPt, try smallDie
-    /// first (higher ToPt = sorts first), then bigDie. Second move uses the other
-    /// die with FrPt2 ≤ FrPt1. Board-state dedup removes duplicates.
+    /// Two passes: smallDie first (all plays kept), then bigDie first (skip
+    /// same-checker duplicates where the smallDie-first path is also legal
+    /// and produces the same board state).
     /// Enforces must-use-both-dice and must-use-larger-die rules.
     /// </summary>
     public static List<Play> GenerateNonDoubles(BoardState state, int die1, int die2)
@@ -246,43 +246,81 @@ public static class MoveGenerator
         var results = new List<Play>();
         bool anyTwoMoves = false;
 
-        // Try both die orderings at each FrPt
-        void TryFirstMove(int die, int otherDie)
+        // ── Pass 1: smallDie first (canonical — keep everything) ────
+
+        if (state.Points[25] > 0)
         {
-            if (state.Points[25] > 0)
+            // Bar entry with smallDie
+            int toPt = 25 - smallDie;
+            if (toPt >= 1 && state.Points[toPt] >= -1)
             {
-                // Bar entry
-                int toPt = 25 - die;
-                if (toPt >= 1 && state.Points[toPt] >= -1)
+                Move m1 = state.Points[toPt] == -1 ? new Move(25, -toPt) : new Move(25, toPt);
+                ApplyMove(state, m1);
+                int fr2 = 26;
+                while (NextMove(state, bigDie, fr2, out Move m2))
                 {
-                    Move m1 = state.Points[toPt] == -1 ? new Move(25, -toPt) : new Move(25, toPt);
-                    ApplyMove(state, m1);
-                    int fr2 = 26;
-                    while (NextMove(state, otherDie, fr2, out Move m2))
-                    {
-                        anyTwoMoves = true;
-                        var play = new Play();
-                        play.Add(m1); play.Add(m2);
-                        results.Add(play);
-                        fr2 = m2.FrPt;
-                    }
-                    UndoMove(state, m1);
+                    anyTwoMoves = true;
+                    var play = new Play();
+                    play.Add(m1); play.Add(m2);
+                    results.Add(play);
+                    fr2 = m2.FrPt;
                 }
-                return;
+                UndoMove(state, m1);
             }
 
+            // Bar entry with bigDie
+            int toPtB = 25 - bigDie;
+            if (toPtB >= 1 && state.Points[toPtB] >= -1)
+            {
+                Move m1 = state.Points[toPtB] == -1 ? new Move(25, -toPtB) : new Move(25, toPtB);
+                ApplyMove(state, m1);
+                int fr2 = 26;
+                while (NextMove(state, smallDie, fr2, out Move m2))
+                {
+                    int m1Land = m1.ToPt > 0 ? m1.ToPt : -m1.ToPt;
+                    if (m2.FrPt == m1Land)
+                    {
+                        // Same checker: bar → FrPt-b → FrPt-b-s
+                        // Duplicate of bar → FrPt-s → FrPt-s-b if:
+                        //   smallInt (25-s) not blocked AND no blot on either intermediate
+                        int smallInt = 25 - smallDie;
+                        if (state.Points[smallInt] >= -1) // not blocked (m1 didn't touch smallInt)
+                        {
+                            bool blotOnSmall = state.Points[smallInt] == -1;
+                            bool blotOnBig = m1.ToPt < 0;
+                            if (!blotOnSmall && !blotOnBig)
+                            {
+                                fr2 = m2.FrPt;
+                                continue; // skip duplicate
+                            }
+                        }
+                    }
+                    anyTwoMoves = true;
+                    var play = new Play();
+                    play.Add(m1); play.Add(m2);
+                    results.Add(play);
+                    fr2 = m2.FrPt;
+                }
+                UndoMove(state, m1);
+            }
+        }
+        else
+        {
+            // ── No bar: iterate board points from rearmost down ──
+
+            // Pass 1: smallDie first (keep all)
             for (int frPt1 = state.HighPointOccupied; frPt1 >= 1; frPt1--)
             {
                 if (state.Points[frPt1] <= 0)
                     continue;
 
-                int toPt = frPt1 <= die ? 0 : frPt1 - die;
-                Move? m1 = TryMakeMove(state, frPt1, toPt, die);
+                int toPt = frPt1 <= smallDie ? 0 : frPt1 - smallDie;
+                Move? m1 = TryMakeMove(state, frPt1, toPt, smallDie);
                 if (m1.HasValue)
                 {
                     ApplyMove(state, m1.Value);
                     int fr2 = frPt1 + 1; // allow same point
-                    while (NextMove(state, otherDie, fr2, out Move m2))
+                    while (NextMove(state, bigDie, fr2, out Move m2))
                     {
                         anyTwoMoves = true;
                         var play = new Play();
@@ -293,10 +331,57 @@ public static class MoveGenerator
                     UndoMove(state, m1.Value);
                 }
             }
-        }
 
-        TryFirstMove(smallDie, bigDie);
-        TryFirstMove(bigDie, smallDie);
+            // Pass 2: bigDie first (skip same-checker duplicates)
+            for (int frPt1 = state.HighPointOccupied; frPt1 >= 1; frPt1--)
+            {
+                if (state.Points[frPt1] <= 0)
+                    continue;
+
+                int toPt = frPt1 <= bigDie ? 0 : frPt1 - bigDie;
+                Move? m1 = TryMakeMove(state, frPt1, toPt, bigDie);
+                if (m1.HasValue)
+                {
+                    ApplyMove(state, m1.Value);
+                    int fr2 = frPt1 + 1; // allow same point
+                    while (NextMove(state, smallDie, fr2, out Move m2))
+                    {
+                        int m1Land = m1.Value.ToPt > 0 ? m1.Value.ToPt : -m1.Value.ToPt;
+                        if (m2.FrPt == m1Land)
+                        {
+                            // Same checker: frPt1 → frPt1-b → frPt1-b-s
+                            // Duplicate of frPt1 → frPt1-s → frPt1-s-b if:
+                            //   (a) both intermediates on-board (not bear-off)
+                            //   (b) smallInt not blocked in original state
+                            //   (c) no blot on either intermediate in original state
+                            int smallInt = frPt1 - smallDie;
+                            if (smallInt >= 1)
+                            {
+                                // smallInt untouched by m1, so current == original
+                                bool smallBlocked = state.Points[smallInt] < -1;
+                                if (!smallBlocked)
+                                {
+                                    bool blotOnSmall = state.Points[smallInt] == -1;
+                                    bool blotOnBig = m1.Value.ToPt < 0;
+                                    if (!blotOnSmall && !blotOnBig)
+                                    {
+                                        fr2 = m2.FrPt;
+                                        continue; // skip duplicate
+                                    }
+                                }
+                            }
+                            // If smallInt <= 0, bear-off intermediate — not a dup
+                        }
+                        anyTwoMoves = true;
+                        var play = new Play();
+                        play.Add(m1.Value); play.Add(m2);
+                        results.Add(play);
+                        fr2 = m2.FrPt;
+                    }
+                    UndoMove(state, m1.Value);
+                }
+            }
+        }
 
         if (!anyTwoMoves)
         {
@@ -332,23 +417,6 @@ public static class MoveGenerator
                 if (p.Count == 2) twoMovePlays.Add(p);
             results = twoMovePlays;
         }
-
-        // Board-state dedup
-        var seen = new HashSet<long>();
-        var unique = new List<Play>();
-        foreach (var play in results)
-        {
-            ApplyMove(state, play[0]);
-            if (play.Count > 1) ApplyMove(state, play[1]);
-
-            long hash = BoardHash(state);
-            if (seen.Add(hash))
-                unique.Add(play);
-
-            if (play.Count > 1) UndoMove(state, play[1]);
-            UndoMove(state, play[0]);
-        }
-        results = unique;
 
         if (results.Count == 0)
             results.Add(new Play());
