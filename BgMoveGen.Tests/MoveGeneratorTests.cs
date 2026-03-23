@@ -382,6 +382,71 @@ public class ReferenceCorrectnessTests
     };
 }
 
+public class GenerateStatesTests
+{
+    [Theory]
+    [InlineData(3, 1)]
+    [InlineData(6, 5)]
+    [InlineData(2, 2)]
+    public void GenerateStates_MatchesGeneratePlays(int die1, int die2)
+    {
+        var state = BoardState.Standard();
+
+        var states = MoveGenerator.GenerateStates(state, die1, die2);
+        var plays = MoveGenerator.GeneratePlays(state, die1, die2);
+
+        Assert.Equal(plays.Count, states.Count);
+
+        // Each state should match applying the corresponding play
+        for (int i = 0; i < plays.Count; i++)
+        {
+            var expected = state.Copy();
+            for (int j = 0; j < plays[i].Count; j++)
+                MoveGenerator.ApplyMove(expected, plays[i][j]);
+
+            for (int p = 0; p < 26; p++)
+                Assert.Equal(expected.Points[p], states[i].Points[p]);
+        }
+    }
+
+    [Fact]
+    public void GenerateStates_DoesNotMutateOriginal()
+    {
+        var state = BoardState.Standard();
+        var original = state.Copy();
+
+        MoveGenerator.GenerateStates(state, 3, 1);
+
+        for (int i = 0; i < 26; i++)
+            Assert.Equal(original.Points[i], state.Points[i]);
+        Assert.Equal(original.HighPointOccupied, state.HighPointOccupied);
+    }
+
+    [Fact]
+    public void EnumerateStates_MatchesGenerateStates()
+    {
+        var state = BoardState.Standard();
+
+        var list = MoveGenerator.GenerateStates(state, 4, 2);
+        var enumerated = MoveGenerator.EnumerateStates(state, 4, 2).ToList();
+
+        Assert.Equal(list.Count, enumerated.Count);
+        for (int i = 0; i < list.Count; i++)
+            for (int p = 0; p < 26; p++)
+                Assert.Equal(list[i].Points[p], enumerated[i].Points[p]);
+    }
+
+    [Fact]
+    public void EnumerateStates_CanShortCircuit()
+    {
+        var state = BoardState.Standard();
+
+        // Take only the first state — should not throw
+        var first = MoveGenerator.EnumerateStates(state, 5, 3).First();
+        Assert.True(first.HighPointOccupied > 0);
+    }
+}
+
 public class PerformanceTests
 {
     [Fact]

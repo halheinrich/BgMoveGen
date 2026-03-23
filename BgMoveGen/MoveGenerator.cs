@@ -477,6 +477,42 @@ public static class MoveGenerator
             return GenerateNonDoubles(state, die1, die2);
     }
 
+    /// <summary>
+    /// Generate all unique legal successor board states for a dice roll.
+    /// Convenience wrapper for consumers that only need resulting positions
+    /// (e.g., RL evaluation), not the move sequences.
+    /// </summary>
+    public static List<BoardState> GenerateStates(BoardState state, int die1, int die2)
+    {
+        var plays = GeneratePlays(state, die1, die2);
+        var states = new List<BoardState>(plays.Count);
+        foreach (var play in plays)
+        {
+            var copy = state.Copy();
+            for (int i = 0; i < play.Count; i++)
+                ApplyMove(copy, play[i]);
+            states.Add(copy);
+        }
+        return states;
+    }
+
+    /// <summary>
+    /// Lazily enumerate all unique legal successor board states for a dice roll.
+    /// Each yielded BoardState is an independent copy — safe to store or discard.
+    /// Allows early termination (e.g., alpha-beta pruning, first-legal-move).
+    /// </summary>
+    public static IEnumerable<BoardState> EnumerateStates(BoardState state, int die1, int die2)
+    {
+        var plays = GeneratePlays(state, die1, die2);
+        foreach (var play in plays)
+        {
+            var copy = state.Copy();
+            for (int i = 0; i < play.Count; i++)
+                ApplyMove(copy, play[i]);
+            yield return copy;
+        }
+    }
+
     // ── Reference implementation (brute-force, obviously correct) ──
 
     /// <summary>
