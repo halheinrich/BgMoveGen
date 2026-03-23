@@ -409,26 +409,7 @@ public class PerformanceTests
 
         int totalCalls = iterations * dice.Length;
         double usPerCall = sw.Elapsed.TotalMicroseconds / totalCalls;
-        Console.WriteLine($"New doubles: {usPerCall:F1} us/call, {totalCalls / sw.Elapsed.TotalSeconds:F0} calls/sec");
-
-        // Legacy comparison
-        sw.Restart();
-        totalPlays = 0;
-        for (int n = 0; n < iterations; n++)
-        {
-            foreach (int die in dice)
-            {
-                var plays = MoveGenerator.Legacy_GeneratePlays(state, die, die);
-                totalPlays += plays.Count;
-            }
-        }
-        sw.Stop();
-
-        double legacyUsPerCall = sw.Elapsed.TotalMicroseconds / totalCalls;
-        Console.WriteLine($"Legacy doubles: {legacyUsPerCall:F1} us/call, {totalCalls / sw.Elapsed.TotalSeconds:F0} calls/sec");
-
-        double speedup = legacyUsPerCall / usPerCall;
-        Console.WriteLine($"Speedup: {speedup:F2}x");
+        Console.WriteLine($"Doubles: {usPerCall:F1} us/call, {totalCalls / sw.Elapsed.TotalSeconds:F0} calls/sec");
     }
 
     [Fact]

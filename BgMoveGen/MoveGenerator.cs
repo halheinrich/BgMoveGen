@@ -3,10 +3,11 @@ namespace BgMoveGen;
 /// <summary>
 /// High-performance legal move generation for backgammon.
 /// 
-/// Two generation paths:
+/// Two optimized generation paths:
 ///   - GenerateDoubles: ordered generation (rearmost-first), no dedup needed.
-///   - Legacy_GeneratePlays: original recursive approach with post-hoc dedup.
-///     Kept temporarily for equivalence testing; will be removed.
+///   - GenerateNonDoubles: ordered generation with avoidance-based dedup.
+/// 
+/// Reference_GeneratePlays: brute-force ground truth for testing.
 /// 
 /// Rules enforced:
 /// - Must enter from bar before moving other checkers
@@ -474,156 +475,6 @@ public static class MoveGenerator
             return GenerateDoubles(state, die1);
         else
             return GenerateNonDoubles(state, die1, die2);
-    }
-
-    // ── Legacy path (kept for equivalence testing) ────────────────
-
-    public static List<Play> Legacy_GeneratePlays(BoardState state, int die1, int die2)
-    {
-        List<Play> allPlays;
-
-        if (die1 == die2)
-        {
-            int[] dice = [die1, die1, die1, die1];
-            allPlays = Legacy_GenerateDoubles(state, dice);
-        }
-        else
-        {
-            allPlays = Legacy_GenerateRegular(state, die1, die2);
-        }
-
-        // Deduplicate
-        var seen = new HashSet<(int, int, int, int, int, int, int, int)>();
-        var unique = new List<Play>();
-        foreach (var play in allPlays)
-        {
-            var key = play.DeduplicationKey();
-            if (seen.Add(key))
-                unique.Add(play);
-        }
-
-        if (unique.Count == 0)
-            unique.Add(new Play());
-
-        return unique;
-    }
-
-    private static List<Play> Legacy_GenerateRegular(BoardState state, int die1, int die2)
-    {
-        var plays1 = new List<Play>();
-        var plays2 = new List<Play>();
-        var current = new Play();
-        var buffers = new Move[2][];
-        buffers[0] = new Move[30];
-        buffers[1] = new Move[30];
-
-        Legacy_Recurse(state, [die1, die2], 0, ref current, plays1, buffers);
-        Legacy_Recurse(state, [die2, die1], 0, ref current, plays2, buffers);
-
-        var allPlays = new List<Play>(plays1.Count + plays2.Count);
-        allPlays.AddRange(plays1);
-        allPlays.AddRange(plays2);
-
-        if (allPlays.Count == 0)
-            return allPlays;
-
-        int maxUsed = 0;
-        foreach (var p in allPlays)
-            if (p.Count > maxUsed) maxUsed = p.Count;
-
-        if (maxUsed == 0)
-            return [];
-
-        var best = new List<Play>();
-        foreach (var p in allPlays)
-            if (p.Count == maxUsed) best.Add(p);
-
-        // If only one die usable, must use the larger
-        if (maxUsed == 1)
-        {
-            int maxDie = Math.Max(die1, die2);
-            // plays1 used die1 first, plays2 used die2 first
-            // 1-move plays from each list used that list's first die
-            var withMax = new List<Play>();
-            if (die1 == maxDie)
-                foreach (var p in plays1)
-                    if (p.Count == 1) withMax.Add(p);
-            if (die2 == maxDie)
-                foreach (var p in plays2)
-                    if (p.Count == 1) withMax.Add(p);
-
-            if (withMax.Count > 0)
-            {
-                // Dedup
-                var seen = new HashSet<(int, int, int, int, int, int, int, int)>();
-                var unique = new List<Play>();
-                foreach (var p in withMax)
-                    if (seen.Add(p.DeduplicationKey())) unique.Add(p);
-                return unique;
-            }
-        }
-
-        return best;
-    }
-
-    private static List<Play> Legacy_GenerateDoubles(BoardState state, int[] dice)
-    {
-        var allPlays = new List<Play>();
-        var current = new Play();
-        var buffers = new Move[dice.Length][];
-        for (int i = 0; i < dice.Length; i++)
-            buffers[i] = new Move[30];
-
-        Legacy_Recurse(state, dice, 0, ref current, allPlays, buffers);
-
-        if (allPlays.Count == 0)
-            return allPlays;
-
-        int maxUsed = 0;
-        foreach (var p in allPlays)
-            if (p.Count > maxUsed) maxUsed = p.Count;
-
-        var best = new List<Play>();
-        foreach (var p in allPlays)
-            if (p.Count == maxUsed) best.Add(p);
-
-        return best;
-    }
-
-    private static void Legacy_Recurse(
-        BoardState state,
-        int[] dice,
-        int diceIndex,
-        ref Play current,
-        List<Play> allPlays,
-        Move[][] buffers)
-    {
-        if (diceIndex >= dice.Length)
-        {
-            allPlays.Add(current.Snapshot());
-            return;
-        }
-
-        int die = dice[diceIndex];
-        int legalCount = SingleMoves(state, die, buffers[diceIndex]);
-
-        if (legalCount == 0)
-        {
-            allPlays.Add(current.Snapshot());
-            return;
-        }
-
-        for (int i = 0; i < legalCount; i++)
-        {
-            var move = buffers[diceIndex][i];
-            ApplyMove(state, move);
-            current.Add(move);
-
-            Legacy_Recurse(state, dice, diceIndex + 1, ref current, allPlays, buffers);
-
-            current.RemoveLast();
-            UndoMove(state, move);
-        }
     }
 
     // ── Reference implementation (brute-force, obviously correct) ──
