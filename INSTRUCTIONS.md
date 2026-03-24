@@ -45,18 +45,6 @@ foreach (var successor in MoveGenerator.EnumerateStates(state, die1, die2))
 - Tests.csproj: https://raw.githubusercontent.com/halheinrich/BgMoveGen/ab52cd3/BgMoveGen.Tests/BgMoveGen.Tests.csproj
 - Tests/MoveGeneratorTests.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/ab52cd3/BgMoveGen.Tests/MoveGeneratorTests.cs
 
-## GitHub fetch workaround
-
-`raw.githubusercontent.com` and `api.github.com` are both DNS-blocked in Claude's container. Claude cannot autonomously fetch source files from GitHub.
-
-**Standard workaround — always follow this pattern:**
-1. Ask Claude: *"Give me the URLs I need to fetch"*
-2. Claude lists the raw GitHub URLs
-3. Paste those URLs back into the chat as a user message
-4. Claude calls `web_fetch` on each URL — this works because the URL was provided by the user
-
----
-
 ## Scope
 
 ### In scope
@@ -214,6 +202,13 @@ Decision deferred until training bottleneck is benchmarked.
 3. Add SetupGenerator (standard position first, then Nackgammon, Bg960)
 4. Add pip count, race detection, flip perspective to BoardState as needed by consumers
 5. Python interop (when training bottleneck is benchmarked)
+
+---
+
+## Shared rules
+
+See `AGENTS.md` in the umbrella repo — applies to all sub-projects.
+`https://raw.githubusercontent.com/halheinrich/backgammon/main/AGENTS.md`
 
 ---
 
