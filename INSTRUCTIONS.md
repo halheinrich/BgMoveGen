@@ -7,7 +7,7 @@ Part of the Backgammon tools ecosystem: https://github.com/halheinrich/backgammo
 
 https://github.com/halheinrich/BgMoveGen
 **Branch:** main
-**Current commit:** `5cb5209` — Add Python interop layer: generate_successor_states NativeAOT export (56 tests pass)
+**Current commit:** `27e82ef` — Add INSTRUCTIONS.md locally
 
 ## Stack
 
