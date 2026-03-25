@@ -7,7 +7,7 @@ Part of the Backgammon tools ecosystem: https://github.com/halheinrich/backgammo
 
 https://github.com/halheinrich/BgMoveGen
 **Branch:** main
-**Current commit:** `27e82ef` — Add INSTRUCTIONS.md locally
+**Current commit:** `d40ac2e` — Pass returns flipped state; add get_starting_position export (59 tests pass)
 
 ## Stack
 
@@ -40,24 +40,30 @@ foreach (var successor in MoveGenerator.EnumerateStates(state, die1, die2))
     if (value > bestValue) { bestValue = value; bestState = successor.Copy(); }
 }
 
-// Python interop (NativeAOT export)
+// Python interop (NativeAOT exports)
 int count = generate_successor_states(input, die1, die2, outputBuffer, bufferCapacity);
-// Returns successor count. 0 = no legal moves (pass).
+// Returns successor count. Pass = 1 (flipped state with no moves applied).
 // Each successor is flipped to opponent's perspective.
 // MaxSuccessors = 100 (4 × 25 theoretical maximum for doubles).
+
+int result = get_starting_position(variant, seed, output);
+// variant: 0=standard, 1=nackgammon, 2=bg960 (deferred)
+// seed:    -1 = no seed; ignored for standard and nackgammon
+// Returns: 0 on success, -1 on unknown variant.
+// Output is from the on-roll player's perspective, not flipped.
 ```
 
 ## Key files
 
-* BgMoveGen.csproj: https://raw.githubusercontent.com/halheinrich/BgMoveGen/5cb5209/BgMoveGen/BgMoveGen.csproj
-* BoardState.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/5cb5209/BgMoveGen/BoardState.cs
-* Move.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/5cb5209/BgMoveGen/Move.cs
-* MoveGenerator.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/5cb5209/BgMoveGen/MoveGenerator.cs
-* Play.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/5cb5209/BgMoveGen/Play.cs
-* Interop.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/5cb5209/BgMoveGen/Interop.cs
-* Tests.csproj: https://raw.githubusercontent.com/halheinrich/BgMoveGen/5cb5209/BgMoveGen.Tests/BgMoveGen.Tests.csproj
-* Tests/MoveGeneratorTests.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/5cb5209/BgMoveGen.Tests/MoveGeneratorTests.cs
-* Tests/InteropTests.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/5cb5209/BgMoveGen.Tests/InteropTests.cs
+* BgMoveGen.csproj: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen/BgMoveGen.csproj
+* BoardState.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen/BoardState.cs
+* Move.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen/Move.cs
+* MoveGenerator.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen/MoveGenerator.cs
+* Play.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen/Play.cs
+* Interop.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen/Interop.cs
+* Tests.csproj: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen.Tests/BgMoveGen.Tests.csproj
+* Tests/MoveGeneratorTests.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen.Tests/MoveGeneratorTests.cs
+* Tests/InteropTests.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen.Tests/InteropTests.cs
 
 ## GitHub fetch workaround
 
@@ -238,16 +244,22 @@ MoveGenerator.UndoMove(state, move);     // reverse the mutation
 
 ## Python interop
 
-NativeAOT export `generate_successor_states` is implemented and tested. BgRLEngine consumes via ctypes:
+Two NativeAOT exports implemented and tested. BgRLEngine consumes via ctypes:
 ```python
 lib = ctypes.CDLL("BgMoveGen.dll")
+
+# Starting position
+output = BgBoardState()
+lib.get_starting_position(0, -1, ctypes.byref(output))  # 0=standard
+
+# Move generation
 output_buffer = (BgBoardState * MaxSuccessors)()
-count = lib.generate_successor_states(ctypes.byref(input), die1, die2, output_buffer, MaxSuccessors)
-successor_states = list(output_buffer[:count])  # empty list = pass
+count = lib.generate_successor_states(ctypes.byref(state), die1, die2, output_buffer, MaxSuccessors)
+successor_states = list(output_buffer[:count])  # always >= 1; pass = 1 flipped state
 ```
 
-Remaining: write the Python-side ctypes wrapper in BgRLEngine and wire into the training loop.
-
+Remaining: write the Python-side ctypes wrapper in BgRLEngine and wire into training loop.
+Bg960 starting position deferred until SetupGenerator is implemented.
 ---
 
 ## Known pitfalls
