@@ -22,6 +22,12 @@ public static unsafe class Interop
     /// </summary>
     public const int MaxSuccessors = 100;
 
+    /// <summary>
+    /// Version reported to consumers via get_version() export.
+    /// BgRLEngine defines the required version; BgMoveGen must match it.
+    /// </summary>
+    public const int Version = 100;
+
     // Reused across calls — avoids allocation in the hot path.
     private static readonly BoardState _state = new BoardState();
 
@@ -48,6 +54,9 @@ public static unsafe class Interop
         BgBoardState* outputBuffer,
         int bufferCapacity)
         => GenerateSuccessorStatesCore(input, die1, die2, outputBuffer, bufferCapacity);
+
+    [UnmanagedCallersOnly(EntryPoint = "get_version")]
+    public static int GetVersion() => Version;
 
     /// <summary>
     /// Testable core — same logic, callable from managed code.
@@ -98,7 +107,7 @@ public static unsafe class Interop
         {
             0 => BoardState.Standard(),
             1 => BoardState.Nackgammon(),
-            // 2 => SetupGenerator.Generate(seed == -1 ? null : seed),  // deferred
+            2 => BoardState.Bg960(seed == -1 ? null : seed),
             _ => null
         };
 
