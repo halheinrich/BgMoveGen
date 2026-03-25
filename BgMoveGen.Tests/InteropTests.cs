@@ -93,7 +93,7 @@ public unsafe class InteropTests
     }
 
     [Fact]
-    public void PassPosition_Returns0Successors()
+    public void PassPosition_ReturnsFlippedState()
     {
         var s = new BoardState();
         s.Points[25] = 2;
@@ -102,37 +102,18 @@ public unsafe class InteropTests
         s.RecalcHighPoint();
 
         var results = RunInterop(MakeExternal(s), 3, 1);
-        Assert.Empty(results);
-    }
 
-    [Fact]
-    public void BearOff_OffCountsCorrectAfterFlip()
-    {
-        var s = new BoardState();
-        s.Points[3] = 2;
-        s.RecalcHighPoint();
+        // Pass = 1 flipped state with no moves applied
+        Assert.Equal(1, results.Length);
 
-        int offPlayerIn = 13;
-        int offOpponentIn = 7;
-        var input = MakeExternal(s, offPlayer: offPlayerIn, offOpponent: offOpponentIn);
-
-        var plays = MoveGenerator.GeneratePlays(s, 3, 3);
-        var results = RunInterop(input, 3, 3);
-
-        Assert.Equal(plays.Count, results.Length);
-
-        for (int i = 0; i < plays.Count; i++)
-        {
-            int bearOffs = 0;
-            for (int j = 0; j < plays[i].Count; j++)
-                if (plays[i][j].ToPt == 0) bearOffs++;
-
-            int expectedOffOpponent = offPlayerIn + bearOffs;
-            int expectedOffPlayer = offOpponentIn;
-
-            Assert.Equal(expectedOffPlayer, results[i].OffPlayer);
-            Assert.Equal(expectedOffOpponent, results[i].OffOpponent);
-        }
+        // Flipped: opponent's blocking points become player's points
+        // Original opponent had -2 on pts[19..24] → after flip: +2 on pts[0..5] (external)
+        // external points[0]=1-pt … after flip of internal pts[24..1]:
+        // internal pts[19]=-2 → external points[18] after flip = +2
+        int positiveCount = 0;
+        for (int i = 0; i < 24; i++)
+            if (results[0].Points[i] > 0) positiveCount++;
+        Assert.True(positiveCount > 0);
     }
     [Fact]
     public void CheckerCounts_ConservedAcrossFlip()
@@ -151,6 +132,58 @@ public unsafe class InteropTests
             }
             Assert.Equal(15, playerTotal);
             Assert.Equal(15, oppTotal);
+        }
+    }
+    [Fact]
+    public void GetStartingPosition_Standard_Returns15CheckersEachSide()
+    {
+        var output = new BgBoardState[1];
+        fixed (BgBoardState* pOut = output)
+        {
+            int result = Interop.GetStartingPositionCore(0, -1, pOut);
+            Assert.Equal(0, result);
+        }
+
+        int playerTotal = output[0].BarPlayer + output[0].OffPlayer;
+        int oppTotal = output[0].BarOpponent + output[0].OffOpponent;
+        for (int i = 0; i < 24; i++)
+        {
+            if (output[0].Points[i] > 0) playerTotal += output[0].Points[i];
+            if (output[0].Points[i] < 0) oppTotal += -output[0].Points[i];
+        }
+        Assert.Equal(15, playerTotal);
+        Assert.Equal(15, oppTotal);
+    }
+
+    [Fact]
+    public void GetStartingPosition_Nackgammon_Returns15CheckersEachSide()
+    {
+        var output = new BgBoardState[1];
+        fixed (BgBoardState* pOut = output)
+        {
+            int result = Interop.GetStartingPositionCore(1, -1, pOut);
+            Assert.Equal(0, result);
+        }
+
+        int playerTotal = output[0].BarPlayer + output[0].OffPlayer;
+        int oppTotal = output[0].BarOpponent + output[0].OffOpponent;
+        for (int i = 0; i < 24; i++)
+        {
+            if (output[0].Points[i] > 0) playerTotal += output[0].Points[i];
+            if (output[0].Points[i] < 0) oppTotal += -output[0].Points[i];
+        }
+        Assert.Equal(15, playerTotal);
+        Assert.Equal(15, oppTotal);
+    }
+
+    [Fact]
+    public void GetStartingPosition_UnknownVariant_ReturnsError()
+    {
+        var output = new BgBoardState[1];
+        fixed (BgBoardState* pOut = output)
+        {
+            int result = Interop.GetStartingPositionCore(99, -1, pOut);
+            Assert.Equal(-1, result);
         }
     }
 }

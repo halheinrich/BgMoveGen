@@ -9,7 +9,7 @@ namespace BgMoveGen;
 /// Contract: generate_successor_states(input, die1, die2, outputBuffer, bufferCapacity)
 ///   - input and every output are always from the on-roll player's perspective.
 ///   - Each successor is flipped before writing so the next call is already oriented.
-///   - Returns successor count. 0 = no legal moves (pass).
+///   - Returns successor count. Pass = 1 (flipped state with no moves applied).
 ///   - NOT thread-safe within a single process. Each OS process gets its own
 ///     instance; multiple Python processes are fully safe. If multi-thread use
 ///     ever needed, change _state to [ThreadStatic].
@@ -62,9 +62,6 @@ public static unsafe class Interop
 
         var plays = MoveGenerator.GeneratePlays(_state, die1, die2);
 
-        if (plays.Count == 1 && plays[0].Count == 0)
-            return 0;
-
         int count = 0;
         foreach (var play in plays)
         {
@@ -81,6 +78,52 @@ public static unsafe class Interop
         }
 
         return count;
+    }
+
+    // ── Starting position export ──────────────────────────────────
+
+    [UnmanagedCallersOnly(EntryPoint = "get_starting_position")]
+    public static int GetStartingPosition(
+        int variant,    // 0=standard, 1=nackgammon, 2=bg960
+        int seed,       // -1 = no seed; ignored for standard and nackgammon
+        BgBoardState* output)
+        => GetStartingPositionCore(variant, seed, output);
+
+    internal static int GetStartingPositionCore(
+        int variant,
+        int seed,
+        BgBoardState* output)
+    {
+        BoardState? s = variant switch
+        {
+            0 => BoardState.Standard(),
+            1 => BoardState.Nackgammon(),
+            // 2 => SetupGenerator.Generate(seed == -1 ? null : seed),  // deferred
+            _ => null
+        };
+
+        if (s == null) return -1;   // unknown variant
+
+        ToExternal(s, output);
+        return 0;
+    }
+
+    /// <summary>
+    /// Write a BoardState into a BgBoardState without flipping.
+    /// Used for starting positions — always from the on-roll player's perspective.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ToExternal(BoardState state, BgBoardState* dest)
+    {
+        var pts = state.Points;
+
+        for (int k = 0; k < 24; k++)
+            dest->Points[k] = (short)pts[k + 1];
+
+        dest->BarPlayer = pts[25];
+        dest->BarOpponent = -pts[0];
+        dest->OffPlayer = 0;
+        dest->OffOpponent = 0;
     }
 
     // ── Translation helpers ───────────────────────────────────────
