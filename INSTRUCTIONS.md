@@ -1,291 +1,281 @@
-# BgMoveGen — Project Instructions
+# BgMoveGen
 
-Part of the Backgammon tools ecosystem: https://github.com/halheinrich/backgammon
-**After committing here, return to the Backgammon Umbrella project to update hashes and instructions doc.**
-
-## Repo
-
-https://github.com/halheinrich/BgMoveGen
-**Branch:** main
-**Current commit:** `d40ac2e` — Pass returns flipped state; add get_starting_position export (59 tests pass)
+> Session conventions: [`../CLAUDE.md`](../CLAUDE.md)
+> Umbrella status & dependency graph: [`../INSTRUCTIONS.md`](../INSTRUCTIONS.md)
+> Mission & principles: [`../VISION.md`](../VISION.md)
 
 ## Stack
 
-C# / .NET 10 / Visual Studio 2026 / xUnit
+C# / .NET 10 / xUnit. NativeAOT-published DLL consumed from Python via ctypes.
 
-## Status
+## Solution
 
-All move generation complete and optimized. Board representation: int[26] (0=opponent bar, 1–24=points, 25=player bar). Move type: (FrPt, ToPt) with sign-encoded hits. Doubles use ordered generation with no dedup needed. Non-doubles use ordered generation with avoidance-based dedup (no HashSet in hot path). Legacy code removed. Reference implementation (`Reference_GeneratePlays`) provides brute-force ground truth for testing. Python interop layer complete: NativeAOT export `generate_successor_states` translates BgRLEngine's BgBoardState layout, runs GeneratePlays, and returns flipped successor states. All 56 tests passing in both Debug and Release.
+`D:\Users\Hal\Documents\Visual Studio 2026\Projects\backgammon\BgMoveGen\BgMoveGen.slnx`
 
-## Purpose
+## Repo
 
-High-performance backgammon move generation library. Pure game logic — no AI, no UI. Produces all legal plays for a given board state and dice roll, enforcing standard backgammon rules. Designed to be consumed by:
+https://github.com/halheinrich/BgMoveGen — branch `main`.
 
-* **BgRLEngine** (Python) via native interop for training speedup
-* Future C# game client / analysis tools
-* Any project in the ecosystem that needs legal move enumeration
+## Depends on
 
-## Public API
+Standalone. No C# dependencies. BgRLEngine is a downstream consumer via the
+NativeAOT interop surface, but that arrow points the other way — BgMoveGen
+knows nothing about it.
+
+## Directory tree
+
 ```
-// Move sequences — for game clients that need to animate or record moves
-List<Play> plays = MoveGenerator.GeneratePlays(state, die1, die2);
-
-// Resulting positions — for RL evaluation, just need successor states
-List<BoardState> states = MoveGenerator.GenerateStates(state, die1, die2);
-
-// Lazy iterator — for early termination (alpha-beta, first-legal-move)
-foreach (var successor in MoveGenerator.EnumerateStates(state, die1, die2))
-{
-    float value = Evaluate(successor);
-    if (value > bestValue) { bestValue = value; bestState = successor.Copy(); }
-}
-
-// Python interop (NativeAOT exports)
-int count = generate_successor_states(input, die1, die2, outputBuffer, bufferCapacity);
-// Returns successor count. Pass = 1 (flipped state with no moves applied).
-// Each successor is flipped to opponent's perspective.
-// MaxSuccessors = 100 (4 × 25 theoretical maximum for doubles).
-
-int result = get_starting_position(variant, seed, output);
-// variant: 0=standard, 1=nackgammon, 2=bg960 (deferred)
-// seed:    -1 = no seed; ignored for standard and nackgammon
-// Returns: 0 on success, -1 on unknown variant.
-// Output is from the on-roll player's perspective, not flipped.
+BgMoveGen.slnx
+BgMoveGen/
+  BgMoveGen.csproj
+  BoardState.cs        — int[26] board, HighPointOccupied, starting positions
+  Move.cs              — (FrPt, ToPt) record struct
+  Play.cs              — fixed 4-slot Move buffer
+  MoveGenerator.cs     — GeneratePlays / GenerateStates / EnumerateStates /
+                         NextMove / ApplyMove / UndoMove / Reference_GeneratePlays
+  Interop.cs           — NativeAOT exports + blittable BgBoardState
+BgMoveGen.Tests/
+  BgMoveGen.Tests.csproj
+  MoveGeneratorTests.cs
+  InteropTests.cs
 ```
-
-## Key files
-
-* BgMoveGen.csproj: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen/BgMoveGen.csproj
-* BoardState.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen/BoardState.cs
-* Move.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen/Move.cs
-* MoveGenerator.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen/MoveGenerator.cs
-* Play.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen/Play.cs
-* Interop.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen/Interop.cs
-* Tests.csproj: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen.Tests/BgMoveGen.Tests.csproj
-* Tests/MoveGeneratorTests.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen.Tests/MoveGeneratorTests.cs
-* Tests/InteropTests.cs: https://raw.githubusercontent.com/halheinrich/BgMoveGen/d40ac2e/BgMoveGen.Tests/InteropTests.cs
-
-## GitHub fetch workaround
-
-`raw.githubusercontent.com` and `api.github.com` are both DNS-blocked in Claude's container. Claude cannot autonomously fetch source files from GitHub.
-
-**Standard workaround — always follow this pattern:**
-
-1. Ask Claude: *"Give me the URLs I need to fetch"*
-2. Claude lists the raw GitHub URLs
-3. Paste those URLs back into the chat as a user message
-4. Claude calls `web_fetch` on each URL — this works because the URL was provided by the user
-
----
-
-## Scope
-
-### In scope
-
-* Board state representation (mutable, optimized for apply/undo)
-* Single-checker move generation for a given die value
-* Complete play generation for a dice roll (all legal combinations)
-* Apply/undo move (mutate in place, no allocation in inner loop)
-* Bar entry, hitting, bearing off (exact and overshoot)
-* Rule enforcement: must use both dice if possible, must use larger die if only one usable
-* Deduplication of equivalent plays (by avoidance for both doubles and non-doubles)
-* Bear-off eligibility tracking (incremental via HighPointOccupied)
-* Race detection (zero contact)
-* Pip count computation
-* Dice rolling
-* Starting position generation (standard, Nackgammon, Bg960)
-* Native interop surface for Python consumption (NativeAOT export, blittable BgBoardState struct)
-
-### Out of scope
-
-* Neural network evaluation
-* Training logic
-* Cube decisions
-* Match equity tables
-* UI / display
-
----
 
 ## Architecture
 
 ### Board representation
 
-* **`int[26]` array.** `Points[0]` = opponent's bar. `Points[1]`–`Points[24]` = playing surface. `Points[25]` = on-roll player's bar.
-* **Perspective: always on-roll.** Positive values = on-roll player's checkers. Negative = opponent's. Board is flipped between turns by the caller.
-* **`HighPointOccupied`**: highest point (1–25) with a player checker, 0 if none. Updated incrementally by ApplyMove/UndoMove. Bear-off legal when `HighPointOccupied <= 6`.
-* Borne-off checkers are not tracked internally — they simply leave the board. Off counts are tracked in BgBoardState for interop only.
-* `BoardState` is mutable. No heap allocations during move generation.
+- `int[26]` array. `Points[0]` = opponent bar. `Points[1..24]` = playing
+  surface. `Points[25]` = on-roll player's bar.
+- **Perspective is always on-roll.** Positive values = on-roll player's
+  checkers, negative = opponent's. Board is flipped between turns by the
+  caller (`generate_successor_states` returns pre-flipped successors).
+- `HighPointOccupied`: highest point (1–25) with a player checker, 0 if none.
+  Updated incrementally by `ApplyMove` / `UndoMove`. Bear-off legal iff
+  `HighPointOccupied <= 6`.
+- Borne-off checkers are not tracked inside `BoardState` — they simply leave
+  the board. Off counts live in `BgBoardState` for interop only.
+- `BoardState` is mutable by design. **No heap allocations in the hot path.**
 
 ### Core types
+
 ```
-BoardState          — int[26] + HighPointOccupied. Mutable.
-Move                — readonly record struct (FrPt, ToPt).
-                      FrPt: 1–24 (board) or 25 (bar).
-                      ToPt: positive = regular, 0 = bear off, negative = hit (land on |ToPt|).
-Play                — fixed 4-slot buffer of Moves, value type.
-MoveGenerator       — static methods: GeneratePlays, GenerateStates, EnumerateStates,
-                      GenerateDoubles, GenerateNonDoubles, NextMove, ApplyMove,
-                      UndoMove, Reference_GeneratePlays.
-Interop             — NativeAOT export: generate_successor_states.
-                      BgBoardState: blittable struct matching BgRLEngine's layout.
-                      MaxSuccessors = 100.
+BoardState     — int[26] + HighPointOccupied. Mutable.
+                 Static factories: Standard(), Nackgammon(), Bg960(seed?).
+Move           — readonly record struct (FrPt, ToPt).
+                 FrPt: 1–24 (board) or 25 (bar).
+                 ToPt: >0 regular, 0 bear off, <0 hit (land on |ToPt|).
+Play           — fixed 4-slot buffer of Moves, value type.
+MoveGenerator  — static: GeneratePlays, GenerateStates, EnumerateStates,
+                 GenerateDoubles, GenerateNonDoubles, NextMove,
+                 ApplyMove, UndoMove, Reference_GeneratePlays.
+Interop        — NativeAOT exports + BgBoardState (blittable layout below).
+                 MaxSuccessors = 100 (4 × 25 theoretical max for doubles).
 ```
+
+### Move encoding
+
+`Move(FrPt, ToPt)` stores everything `ApplyMove` / `UndoMove` need:
+
+- Regular: `Move(13, 7)` — 13 → 7.
+- Bear off: `Move(4, 0)`.
+- Hit: `Move(13, -12)` — land on 12, send opponent blot to `Points[0]`.
+- Formula: `ToPt = FrPt <= die ? 0 : FrPt - die`.
+- Undo reverses apply. For hits, restore the blot. For bear-off, put the
+  checker back. `FrPt > HighPointOccupied` after undo triggers update.
+
+### Apply/undo pattern
+
+```
+MoveGenerator.ApplyMove(state, move);
+// ... recurse or continue ...
+MoveGenerator.UndoMove(state, move);
+```
+
+`HighPointOccupied` tracking:
+
+- **Apply**: if `FrPt == HighPointOccupied` and `Points[FrPt] == 0` after
+  decrement, scan down from `FrPt - 1` to find the new high.
+- **Undo**: if `FrPt > HighPointOccupied`, set it to `FrPt`. Player can never
+  move backward, so `ToPt` never raises `HighPointOccupied` during apply.
+
+### NextMove iterator
+
+```
+bool NextMove(BoardState state, int die, int prevFrPt, out Move move)
+```
+
+Finds one legal move scanning from `prevFrPt - 1` downward. First call:
+`prevFrPt = 26` (starts from the bar at 25). Subsequent calls: pass
+`lastMove.FrPt` to advance, or `lastMove.FrPt + 1` to allow the same point
+again (same-checker continuation).
+
+### Doubles generation — ordered, no dedup
+
+Four nested `while` loops over `NextMove`. Each level passes
+`prevMove.FrPt + 1` to allow same-point moves, then advances to `move.FrPt`
+after each iteration. If a deeper level finds nothing, the partial result is
+recorded only if no full-depth results exist yet ("only one way to get fewer
+than 4"). The non-increasing `FrPt` constraint produces canonical ordering —
+no duplicates generated, no `HashSet` needed.
+
+### Non-doubles generation — avoidance-based dedup
+
+Two passes iterating `FrPt` from rearmost down:
+
+- **Pass 1 (smallDie first):** canonical ordering, keep all plays. At each
+  `FrPt`, use `smallDie` for the first move and `bigDie` for the second
+  (with `FrPt2 <= FrPt1`).
+- **Pass 2 (bigDie first):** at each `FrPt`, use `bigDie` first and
+  `smallDie` second. Skip same-checker plays where (a) both intermediates
+  are on-board, (b) the smallDie intermediate is not blocked, and (c)
+  neither intermediate has an opponent blot — those are exact duplicates
+  of pass 1.
+
+Two-different-checker plays are never duplicated because the `FrPt` ordering
+constraint is symmetric — the same pair appears the same way in both passes.
+Both passes enforce must-use-both-dice and must-use-larger-die.
 
 ### Interop layout
 
 BgRLEngine hands in and expects back:
+
 ```
-points[0..23]  int16  positive = on-roll player's checkers
-                      negative = opponent's checkers
-                      points[0] = 1-point, points[23] = 24-point
-                      player moves high→low
-bar_player     int    on-roll player's checkers on bar
-bar_opponent   int    opponent's checkers on bar
-off_player     int    on-roll player's checkers borne off
-off_opponent   int    opponent's checkers borne off
-```
-Every successor is flipped before return (negate+reverse points, swap bars, swap off counts) so the next call is already oriented correctly. NOT thread-safe within a single process — each OS process gets its own static `_state` instance. If multi-thread use ever needed, change `_state` to `[ThreadStatic]`.
-
-### Move encoding
-
-The `Move(FrPt, ToPt)` encoding stores everything needed to apply and undo:
-
-* **Regular move:** `Move(13, 7)` — move from point 13 to point 7
-* **Bear off:** `Move(4, 0)` — bear off from point 4
-* **Hit:** `Move(13, -12)` — land on point 12, sending opponent blot to bar (`Points[0]`)
-* **ToPt calculation:** `ToPt = FrPt <= die ? 0 : FrPt - die`
-* **Undo:** reverse the apply. For hits, restore the blot. For bear-off, put checker back. FrPt > HighPointOccupied triggers update.
-
-### Key design principles
-
-* **Zero allocation in the hot path**: apply/undo mutates in place, no BoardState.Copy()
-* **Incremental state tracking**: `HighPointOccupied` updated on apply/undo, never rescanned (except when emptying the highest point)
-* **Result-state deduplication by avoidance (doubles)**: `NextMove` iterator with non-increasing FrPt constraint produces canonical ordering — no duplicates generated, no HashSet needed
-* **Avoidance-based dedup (non-doubles)**: pass 1 (smallDie first) keeps all plays; pass 2 (bigDie first) skips same-checker plays where smallDie-first path is also legal and produces the same board state
-* **Correctness validated against reference implementation**: `Reference_GeneratePlays` brute-force generates all plays and deduplicates by board state
-
-### NextMove iterator pattern
-```
-// NextMove finds one legal move scanning from prevFrPt - 1 downward.
-// First call: prevFrPt = 26 (starts from bar at 25).
-// Subsequent calls: prevFrPt = lastMove.FrPt (scan from FrPt - 1 down).
-// Same-point continuation: pass FrPt + 1 to allow the same point again.
-
-bool NextMove(BoardState state, int die, int prevFrPt, out Move move)
+points[0..23]  int16   positive = on-roll player's checkers
+                       negative = opponent's checkers
+                       points[0]  = 1-point
+                       points[23] = 24-point
+                       on-roll player moves high → low
+bar_player     int32   on-roll player's checkers on bar
+bar_opponent   int32   opponent's checkers on bar
+off_player     int32   on-roll player's checkers borne off
+off_opponent   int32   opponent's checkers borne off
 ```
 
-### Doubles generation (ordered, no dedup)
+`generate_successor_states` flips every successor before return (negate and
+reverse `points`, swap bars, swap off counts) so the next call is already
+oriented correctly. `get_starting_position` does **not** flip — output is
+from the on-roll player's perspective.
 
-Four nested while loops using NextMove. Each level passes `prevMove.FrPt + 1` to allow same-point moves, then advances to `move.FrPt` after each iteration. If a deeper level finds nothing, the partial result is recorded only if no full-depth results exist yet ("only one way to get fewer than 4").
+### Bg960 random starting position
 
-### Non-doubles generation (avoidance-based dedup)
+`BoardState.Bg960(seed?)` generates a symmetric random opening satisfying:
 
-Two passes iterating FrPt from rearmost down:
+- **Symmetry:** each made point on the player side mirrors to `25 - pt` on
+  the opponent side.
+- **Quadrant coverage:** at least one made point in every quadrant (1–6,
+  7–12, 13–18, 19–24). Mirror points are blocked at selection time so the
+  constraint cannot conflict with itself.
+- **Made-point count:** sampled from a weighted distribution skewed toward
+  4–5 points (weights: 2→1, 3→3, 4→10, 5→10, 6→5, 7→2). Capped at 7 since
+  every made point needs ≥ 2 checkers and each side has 15.
+- **Per-point checker count:** stars-and-bars over the made points with a
+  min-2 floor.
+- **Pip floor:** total pip count must be ≥ 100. Failing positions are
+  rejected and the outer loop retries, up to 1000 attempts before throwing.
 
-* **Pass 1 (smallDie first):** canonical ordering, keep all plays. At each FrPt, use smallDie for first move, bigDie for second move (FrPt2 ≤ FrPt1).
-* **Pass 2 (bigDie first):** at each FrPt, use bigDie for first move, smallDie for second. Skip same-checker plays where (a) both intermediates are on-board, (b) the smallDie intermediate is not blocked, and (c) neither intermediate has an opponent blot. These are exact duplicates of pass 1 plays.
+### Design principles
 
-Two-different-checker plays are never duplicated because the FrPt ordering constraint (FrPt2 ≤ FrPt1) is symmetric — the same pair appears the same way in both passes.
+- Zero allocation in the hot path: apply/undo mutates in place, no
+  `BoardState.Copy()`.
+- Incremental state tracking: `HighPointOccupied` is updated on apply/undo,
+  never rescanned except when emptying the highest point.
+- Dedup without collections: canonical ordering for doubles, avoidance for
+  non-doubles — no `HashSet` in the inner loop.
+- Correctness is validated against a reference implementation rather than
+  asserted structurally (see Validation).
 
-Enforces must-use-both-dice and must-use-larger-die rules.
+### Validation
 
-### Apply/undo pattern
-```
-MoveGenerator.ApplyMove(state, move);    // mutate forward
-// ... recurse or continue ...
-MoveGenerator.UndoMove(state, move);     // reverse the mutation
-```
+- `Reference_GeneratePlays` — brute-force recursive enumeration of both die
+  orderings, deduplicated by final board state (FNV-1a hash). Guaranteed
+  correct. Ground truth.
+- `ReferenceCorrectnessTests.Optimized_MatchesReference` — parameterized
+  harness comparing optimized `GeneratePlays` to `Reference_GeneratePlays`
+  by board-state set equality. Extended by adding `[InlineData]` rows; the
+  default set covers all 21 opening rolls.
+- Test categories: `BoardState` setup (checker counts, `HighPointOccupied`,
+  bear-off eligibility); apply/undo round-trip; single-move generation (bar
+  entry, regular, bear-off exact and overshoot, ordering); reference
+  correctness; `GenerateStates` / `EnumerateStates` API; performance
+  benchmarks; interop (successor count, flip correctness, off-count
+  tracking, checker conservation, pass detection, Bg960 conservation and
+  seed reproducibility).
 
-### HighPointOccupied tracking
+## Public API
 
-* **Apply:** if `FrPt == HighPointOccupied` and `Points[FrPt] == 0` after decrement, scan down from `FrPt - 1` to find new high.
-* **Undo:** if `FrPt > HighPointOccupied`, set `HighPointOccupied = FrPt`.
-* Player can never move backward, so ToPt never raises HighPointOccupied during apply.
+### Managed — `MoveGenerator`
 
----
+```csharp
+// Full play enumeration — for clients that need to animate or record moves.
+List<Play> plays = MoveGenerator.GeneratePlays(state, die1, die2);
 
-## Validation strategy
+// Successor states only — for RL evaluation.
+List<BoardState> states = MoveGenerator.GenerateStates(state, die1, die2);
 
-* **Primary correctness target**: `Reference_GeneratePlays` — brute-force implementation that generates all possible plays via recursive enumeration of both die orderings, then deduplicates by final board state (FNV-1a hash). Guaranteed correct. Used as ground truth.
-* **Master test harness**: `ReferenceCorrectnessTests.Optimized_MatchesReference` — parameterized by (position, die1, die2). Compares optimized `GeneratePlays` against `Reference_GeneratePlays` by board-state set equality. Add new test cases by adding `[InlineData]` rows.
-* **xUnit test project** (`BgMoveGen.Tests`) with 56 tests currently passing (Debug and Release).
-* Test categories:
-  + BoardState setup (checker counts, HighPointOccupied, bear-off eligibility)
-  + Apply/undo correctness (round-trip identity, HighPointOccupied tracking)
-  + Single move generation (bar entry, regular, bearing off, overshoot, ordering)
-  + Reference correctness (optimized vs brute-force for all 21 opening rolls — extensible via InlineData)
-  + GenerateStates / EnumerateStates API tests
-  + Performance benchmarks (doubles-only and all-rolls)
-  + Interop: successor count, flip correctness, off count tracking, checker conservation, pass detection
-
----
-
-## Performance
-
-| Metric | Value (Release) | Notes |
-| --- | --- | --- |
-| All 21 opening rolls | 3.4 μs/call | Avoidance-based dedup, no HashSet |
-| Doubles only | 3.9 μs/call | Ordered generation, no dedup |
-| Target | < 10 μs/call | ✅ Met — 3× under target |
-
----
-
-## Bg960 setup constraints (future)
-
-* Symmetrical (opponent mirrors player)
-* No checkers on bar or borne off at start
-* At least 2 checkers on every occupied point (no blots)
-* At least one occupied point per quadrant
-* No mirror conflicts (point i and point 23-i never both occupied)
-* Minimum pip count: 100
-* Made-point distribution weighted toward 4–5 made points (configurable)
-
----
-
-## Python interop
-
-Two NativeAOT exports implemented and tested. BgRLEngine consumes via ctypes:
-```python
-lib = ctypes.CDLL("BgMoveGen.dll")
-
-# Starting position
-output = BgBoardState()
-lib.get_starting_position(0, -1, ctypes.byref(output))  # 0=standard
-
-# Move generation
-output_buffer = (BgBoardState * MaxSuccessors)()
-count = lib.generate_successor_states(ctypes.byref(state), die1, die2, output_buffer, MaxSuccessors)
-successor_states = list(output_buffer[:count])  # always >= 1; pass = 1 flipped state
+// Lazy iterator — for early termination (alpha-beta, first-legal-move).
+// Yielded BoardState is a shared mutable buffer; clone via Copy() if kept.
+foreach (var successor in MoveGenerator.EnumerateStates(state, die1, die2))
+{
+    float value = Evaluate(successor);
+    if (value > bestValue) { bestValue = value; bestState = successor.Copy(); }
+}
 ```
 
-Remaining: write the Python-side ctypes wrapper in BgRLEngine and wire into training loop.
-Bg960 starting position deferred until SetupGenerator is implemented.
----
+All three enforce must-use-both-dice and must-use-larger-die. A pass is
+represented as a single successor identical to the input board (flipped by
+the interop layer).
 
-## Known pitfalls
+### Native — NativeAOT exports
 
-* **int overflow in pip counts**: checker\_count × point\_index can exceed byte range. Use int or short.
-* **Mirror conflicts in Bg960**: point i and point (23-i) must never both be selected for player checkers. Track a blocked set during generation.
-* **Bearing off overshoot**: only legal from the highest occupied point in the home board (`HighPointOccupied`). Easy to get wrong.
-* **Same-checker dedup**: different die orderings for same-checker moves produce the same board state when neither intermediate has a blot and both intermediates are reachable. Handled by avoidance in pass 2.
-* **Static `_state` in Interop**: not thread-safe within a single process by design. Multiple OS processes are safe. InteropTests must run sequentially — enforced via `[Collection("Interop")]`.
+```c
+int generate_successor_states(
+    BgBoardState* input,
+    int die1, int die2,
+    BgBoardState* outputBuffer,
+    int bufferCapacity);
+// Returns successor count (always >= 1; a pass returns one flipped state
+// with no moves applied). Each successor is flipped to the opponent's
+// perspective. MaxSuccessors = 100.
 
----
+int get_starting_position(int variant, int seed, BgBoardState* output);
+// variant: 0 = standard, 1 = nackgammon, 2 = bg960
+// seed:    -1 = no seed; ignored for standard and nackgammon
+// Returns: 0 on success, -1 on unknown variant.
+// Output is from the on-roll player's perspective (NOT flipped).
+
+int get_version();
+// Returns the DLL version integer. BgRLEngine checks this against
+// REQUIRED_MOVEGEN_VERSION on load and hard-fails on mismatch.
+```
+
+## Pitfalls
+
+- **Bearing-off overshoot.** Legal only from the highest occupied point in
+  the home board (`HighPointOccupied`). The die must exceed `FrPt` *and*
+  `FrPt == HighPointOccupied`. Easy to get wrong.
+- **Same-checker dedup (non-doubles).** Different die orderings for the
+  same checker produce the same board state when neither intermediate has
+  a blot and both intermediates are reachable. Handled by the pass-2
+  avoidance check — three conditions, all three must hold to skip.
+- **Mirror conflicts in Bg960.** Point `i` and point `25 - i` can never
+  both be made by the player (they'd collide under symmetry). The
+  generator tracks a blocked set as it picks quadrant representatives.
+- **Interop `_state` is static and not thread-safe.** One OS process per
+  caller is fine (BgRLEngine's current model). If multi-thread use ever
+  becomes needed, change to `[ThreadStatic]`. Interop tests must run
+  sequentially — enforced via `[Collection("Interop")]`.
+- **Pip-count integer width.** `checker_count * point_index` stays well
+  inside `int` range but overflows `byte`. Use `int` or `short`.
+- **`EnumerateStates` yields a shared buffer.** Consumers that retain
+  successors across iterations must call `.Copy()`.
 
 ## Next steps
 
-1. Write Python-side ctypes wrapper in BgRLEngine and wire into training loop
-2. Add SetupGenerator (standard position first, then Nackgammon, Bg960)
-3. Profile and optimize remaining allocations (List results, Play structs)
-4. Add more test positions (bar entry, bearing off, blocked, edge cases)
-5. Add pip count, race detection, flip perspective to BoardState as needed by consumers
-
----
-
-## Session handoff
-
-After committing:
-
-1. `git rev-parse HEAD` — note the short hash
-2. Update commit hash in this doc and in every raw URL
-3. Return to Backgammon Umbrella project — update umbrella instructions doc
+- Profile and shrink remaining allocations (`List<Play>` / `List<BoardState>`
+  results, `Play` struct handling on the boundary).
+- Extend the `Optimized_MatchesReference` harness with more positions: bar
+  entry with and without blockers, late-bearoff edge cases, near-blocked
+  positions, contact/race transitions.
+- Consider exposing pip count, race detection, and perspective flip on
+  `BoardState` as first-class methods if consumers grow beyond the current
+  interop surface.
