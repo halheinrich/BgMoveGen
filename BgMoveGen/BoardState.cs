@@ -90,4 +90,175 @@ public class BoardState
         s.RecalcHighPoint();
         return s;
     }
+    // ── Bg960 setup ───────────────────────────────────────────────
+
+    // Quadrant boundaries (1-indexed point indices)
+    private static readonly (int from, int to)[] Quadrants =
+    [
+    (1,  6),   // home board
+    (7,  12),  // outer board
+    (13, 18),  // opponent outer board
+    (19, 24),  // opponent home board
+];
+
+    // Made-point weights: num_points → weight
+    private static readonly (int points, int weight)[] MadePointWeights =
+    [
+        (2, 1), (3, 3), (4, 10), (5, 10), (6, 5), (7, 2),
+];
+
+    /// <summary>
+    /// Generate a random Bg960 starting position.
+    /// Constraints: symmetrical, no blots (≥2 per point), one point per quadrant,
+    /// no mirror conflicts, pip count ≥ 100, weighted toward 4–5 made points.
+    /// </summary>
+    /// <param name="seed">Optional RNG seed for reproducibility. Null = random.</param>
+    /// <exception cref="RuntimeException">Thrown if no valid position found in 1000 attempts.</exception>
+    public static BoardState Bg960(int? seed = null)
+    {
+        var rng = seed.HasValue ? new Random(seed.Value) : new Random();
+
+        // Precompute sampling distribution
+        int maxPoints = 15 / 2;  // min 2 checkers per point → max 7 points
+        int totalWeight = 0;
+        for (int i = 0; i < MadePointWeights.Length; i++)
+            if (MadePointWeights[i].points >= 4 && MadePointWeights[i].points <= maxPoints)
+                totalWeight += MadePointWeights[i].weight;
+
+        for (int attempt = 0; attempt < 1000; attempt++)
+        {
+            int numPoints = SampleNumPoints(rng, totalWeight);
+            int[]? points = SelectPoints(rng, numPoints);
+            if (points == null) continue;
+
+            int[] checkers = DistributeCheckers(rng, points, 15, 2);
+
+            // Check pip count (1-indexed: point i contributes checkers[i-1] * i)
+            int pips = 0;
+            for (int i = 0; i < points.Length; i++)
+                pips += checkers[i] * points[i];
+            if (pips < 100) continue;
+
+            // Build board
+            var s = new BoardState();
+            for (int i = 0; i < points.Length; i++)
+            {
+                int pt = points[i];
+                int mirror = 25 - pt;   // 1-indexed mirror
+                s.Points[pt] = checkers[i];
+                s.Points[mirror] = -checkers[i];
+            }
+            s.RecalcHighPoint();
+            return s;
+        }
+
+        throw new InvalidOperationException("Bg960: failed to generate valid position in 1000 attempts");
+    }
+
+    private static int SampleNumPoints(Random rng, int totalWeight)
+    {
+        int r = rng.Next(totalWeight);
+        int cumulative = 0;
+        for (int i = 0; i < MadePointWeights.Length; i++)
+        {
+            var (points, weight) = MadePointWeights[i];
+            if (points < 4 || points > 15 / 2) continue;
+            cumulative += weight;
+            if (r < cumulative) return points;
+        }
+        return MadePointWeights[^1].points;
+    }
+
+    /// <summary>
+    /// Select numPoints distinct points satisfying quadrant coverage and no mirror conflicts.
+    /// Returns null if 1000 inner attempts fail.
+    /// </summary>
+    private static int[]? SelectPoints(Random rng, int numPoints)
+    {
+        for (int attempt = 0; attempt < 1000; attempt++)
+        {
+            var blocked = new HashSet<int>();
+            var mandatory = new List<int>();
+            bool failed = false;
+
+            // One mandatory point per quadrant
+            foreach (var (from, to) in Quadrants)
+            {
+                var candidates = new List<int>();
+                for (int p = from; p <= to; p++)
+                    if (!blocked.Contains(p)) candidates.Add(p);
+
+                if (candidates.Count == 0) { failed = true; break; }
+
+                int pt = candidates[rng.Next(candidates.Count)];
+                mandatory.Add(pt);
+                blocked.Add(pt);
+                blocked.Add(25 - pt);   // block mirror
+            }
+
+            if (failed) continue;
+
+            if (numPoints < mandatory.Count) continue;
+
+            // Fill remaining slots
+            int remaining = numPoints - mandatory.Count;
+            var available = new List<int>();
+            for (int p = 1; p <= 24; p++)
+                if (!blocked.Contains(p)) available.Add(p);
+
+            if (remaining > available.Count) continue;
+
+            var extra = new List<int>();
+            for (int i = 0; i < remaining; i++)
+            {
+                if (available.Count == 0) break;
+                int idx = rng.Next(available.Count);
+                int pt = available[idx];
+                extra.Add(pt);
+                available.RemoveAt(idx);
+                available.Remove(25 - pt);  // remove mirror
+            }
+
+            if (extra.Count < remaining) continue;
+
+            mandatory.AddRange(extra);
+            mandatory.Sort();
+            return mandatory.ToArray();
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Distribute totalCheckers across points with at least minPerPoint each.
+    /// Remainder distributed via stars-and-bars (sorted random dividers).
+    /// </summary>
+    private static int[] DistributeCheckers(Random rng, int[] points, int totalCheckers, int minPerPoint)
+    {
+        int k = points.Length;
+        int remainder = totalCheckers - minPerPoint * k;
+        int[] extra = new int[k];
+
+        if (remainder > 0)
+        {
+            // Stars and bars: k-1 random dividers in [0, remainder]
+            int[] dividers = new int[k - 1];
+            for (int i = 0; i < dividers.Length; i++)
+                dividers[i] = rng.Next(remainder + 1);
+            Array.Sort(dividers);
+
+            int prev = 0;
+            for (int i = 0; i < k - 1; i++)
+            {
+                extra[i] = dividers[i] - prev;
+                prev = dividers[i];
+            }
+            extra[k - 1] = remainder - prev;
+        }
+
+        int[] result = new int[k];
+        for (int i = 0; i < k; i++)
+            result[i] = minPerPoint + extra[i];
+        return result;
+    }
 }

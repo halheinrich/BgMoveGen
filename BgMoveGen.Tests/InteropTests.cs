@@ -186,4 +186,62 @@ public unsafe class InteropTests
             Assert.Equal(-1, result);
         }
     }
+
+    [Fact]
+    public void GetStartingPosition_Bg960_Returns15CheckersEachSide()
+    {
+        var output = new BgBoardState[1];
+        fixed (BgBoardState* pOut = output)
+        {
+            int result = Interop.GetStartingPositionCore(2, -1, pOut);
+            Assert.Equal(0, result);
+        }
+
+        int playerTotal = output[0].BarPlayer + output[0].OffPlayer;
+        int oppTotal = output[0].BarOpponent + output[0].OffOpponent;
+        for (int i = 0; i < 24; i++)
+        {
+            if (output[0].Points[i] > 0) playerTotal += output[0].Points[i];
+            if (output[0].Points[i] < 0) oppTotal += -output[0].Points[i];
+        }
+        Assert.Equal(15, playerTotal);
+        Assert.Equal(15, oppTotal);
+    }
+
+    [Fact]
+    public void GetStartingPosition_Bg960_SeedIsReproducible()
+    {
+        var out1 = new BgBoardState[1];
+        var out2 = new BgBoardState[1];
+        fixed (BgBoardState* p1 = out1)
+        fixed (BgBoardState* p2 = out2)
+        {
+            Interop.GetStartingPositionCore(2, 42, p1);
+            Interop.GetStartingPositionCore(2, 42, p2);
+        }
+
+        for (int i = 0; i < 24; i++)
+            Assert.Equal(out1[0].Points[i], out2[0].Points[i]);
+        Assert.Equal(out1[0].BarPlayer, out2[0].BarPlayer);
+        Assert.Equal(out1[0].BarOpponent, out2[0].BarOpponent);
+    }
+
+    [Fact]
+    public void GetStartingPosition_Bg960_PipCountAtLeast100()
+    {
+        // Run 20 times with different seeds to verify pip count constraint
+        for (int seed = 0; seed < 20; seed++)
+        {
+            var output = new BgBoardState[1];
+            fixed (BgBoardState* pOut = output)
+                Interop.GetStartingPositionCore(2, seed, pOut);
+
+            int pips = 0;
+            for (int i = 0; i < 24; i++)
+                if (output[0].Points[i] > 0)
+                    pips += output[0].Points[i] * (i + 1);  // points[0]=1-pt
+            Assert.True(pips >= 100, $"Seed {seed} produced pip count {pips} < 100");
+        }
+    }
+
 }
