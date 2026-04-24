@@ -33,10 +33,12 @@ BgMoveGen/
   Play.cs              — fixed 4-slot Move buffer
   MoveGenerator.cs     — GeneratePlays / GenerateStates / EnumerateStates /
                          NextMove / ApplyMove / UndoMove / Reference_GeneratePlays
+  MoveNotationFormatter.cs — Play → standard notation ("8/5(2)", "24/18*")
   Interop.cs           — NativeAOT exports + blittable BgBoardState
 BgMoveGen.Tests/
   BgMoveGen.Tests.csproj
   MoveGeneratorTests.cs
+  MoveNotationFormatterTests.cs
   InteropTests.cs
 ```
 
@@ -68,6 +70,9 @@ Play           — fixed 4-slot buffer of Moves, value type.
 MoveGenerator  — static: GeneratePlays, GenerateStates, EnumerateStates,
                  GenerateDoubles, GenerateNonDoubles, NextMove,
                  ApplyMove, UndoMove, Reference_GeneratePlays.
+MoveNotationFormatter — static: Format(Play) → standard notation string.
+                 Collapses same-checker chains (bidirectional), groups
+                 identical adjacent chains with "(n)" count suffix.
 Interop        — NativeAOT exports + BgBoardState (blittable layout below).
                  MaxSuccessors = 100 (4 × 25 theoretical max for doubles).
 ```
@@ -224,6 +229,21 @@ foreach (var successor in MoveGenerator.EnumerateStates(state, die1, die2))
 All three enforce must-use-both-dice and must-use-larger-die. A pass is
 represented as a single successor identical to the input board (flipped by
 the interop layer).
+
+### Managed — `MoveNotationFormatter`
+
+```csharp
+// Play → standard backgammon notation. No board argument needed —
+// Move.ToPt already encodes hits (negative) and bear-offs (zero).
+string notation = MoveNotationFormatter.Format(play);
+// Examples: "8/5(2)", "bar/22", "24/18*", "6/off", "21/14".
+```
+
+Handles bar entry (`FrPt == 25` → "bar"), bear off (`ToPt == 0` → "off"),
+hits (`ToPt < 0` → "*" suffix), doubles (identical adjacent chains collapse
+to "(n)" count suffix), and same-checker chain collapse across multiple
+legs. Chain matching is bidirectional — legs emitted in either time order
+collapse the same way.
 
 ### Native — NativeAOT exports
 
