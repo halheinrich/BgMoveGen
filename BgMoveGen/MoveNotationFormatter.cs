@@ -31,8 +31,10 @@ namespace BgMoveGen;
 ///            the guard keeps the invariant local to the formatter.
 ///
 /// Output ordering: chains are sorted by from-pt descending, with
-/// |to-pt| descending as tiebreaker. Identical adjacent chains then
-/// collapse to a count suffix — "8/5(2)".
+/// |to-pt| descending as tiebreaker. Adjacent chains sharing
+/// `(from, to)` collapse to a count suffix — "8/5(2)". The hit
+/// flag is OR-aggregated across the group, and the "*" follows the
+/// count: "6/2(2)*" if any constituent chain hit.
 /// </remarks>
 public static class MoveNotationFormatter
 {
@@ -104,15 +106,25 @@ public static class MoveNotationFormatter
         int idx = 0;
         while (idx < chainCount)
         {
+            // Group by (FromPt, ToPt) only — chains landing on the same
+            // point with mixed hit status still collapse to "(n)". The
+            // "*" is OR-aggregated across the group: present if any
+            // constituent chain hit.
             int run = 1;
-            while (idx + run < chainCount && chains[idx + run] == chains[idx])
+            bool anyHit = chains[idx].Hit;
+            while (idx + run < chainCount
+                   && chains[idx + run].FromPt == chains[idx].FromPt
+                   && chains[idx + run].ToPt == chains[idx].ToPt)
+            {
+                if (chains[idx + run].Hit) anyHit = true;
                 run++;
+            }
 
             if (sb.Length > 0) sb.Append(' ');
             var ch = chains[idx];
             sb.Append(FromLabel(ch.FromPt)).Append('/').Append(ToLabel(ch.ToPt));
-            if (ch.Hit) sb.Append('*');
             if (run > 1) sb.Append('(').Append(run).Append(')');
+            if (anyHit) sb.Append('*');
 
             idx += run;
         }

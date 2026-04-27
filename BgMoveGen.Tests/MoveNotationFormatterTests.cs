@@ -172,6 +172,28 @@ public class MoveNotationFormatterTests
     }
 
     [Fact]
+    public void Format_PairMixedHits_GroupsWithAsteriskAfterCount()
+    {
+        // Two checkers from 6 land on 2; the first hits an opponent blot,
+        // the second joins the now-safe point. Group collapses to "6/2(2)"
+        // and the "*" is OR-aggregated onto the group, after the count.
+        // This is the bug fix: previously rendered "6/2* 6/2".
+        var result = MoveNotationFormatter.Format(
+            MakePlay(new Move(6, -2), new Move(6, 2)));
+        Assert.Equal("6/2(2)*", result);
+    }
+
+    [Fact]
+    public void Format_QuadOneHit_GroupsWithAsteriskAfterCount()
+    {
+        // Doubles into the same destination, one hit among the four.
+        // Locks the (n)-before-* ordering at higher counts.
+        var result = MoveNotationFormatter.Format(MakePlay(
+            new Move(6, -2), new Move(6, 2), new Move(6, 2), new Move(6, 2)));
+        Assert.Equal("6/2(4)*", result);
+    }
+
+    [Fact]
     public void Format_PartialRepeat_GroupsOnlyMatching()
     {
         // 8/5 6/3 6/3 — first leg distinct, next two identical.

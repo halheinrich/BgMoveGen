@@ -236,14 +236,15 @@ the interop layer).
 // Play → standard backgammon notation. No board argument needed —
 // Move.ToPt already encodes hits (negative) and bear-offs (zero).
 string notation = MoveNotationFormatter.Format(play);
-// Examples: "8/5(2)", "bar/22", "24/18*", "6/off", "21/14".
+// Examples: "8/5(2)", "bar/22", "24/18*", "6/off", "21/14", "6/2(2)*".
 ```
 
 Handles bar entry (`FrPt == 25` → "bar"), bear off (`ToPt == 0` → "off"),
-hits (`ToPt < 0` → "*" suffix), doubles (identical adjacent chains collapse
-to "(n)" count suffix), and same-checker chain collapse across multiple
-legs. Chain matching is bidirectional — legs emitted in either time order
-collapse the same way.
+hits (`ToPt < 0` → "*" suffix), doubles (chains sharing `(from, to)`
+collapse to "(n)" — the "*" follows the count, "(n)*", and is applied if
+**any** constituent chain hit), and same-checker chain collapse across
+multiple legs. Chain matching is bidirectional — legs emitted in either
+time order collapse the same way.
 
 ### Native — NativeAOT exports
 
