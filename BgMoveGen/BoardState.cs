@@ -49,6 +49,44 @@ public class BoardState
         return copy;
     }
 
+    // ── Mop bridge ────────────────────────────────────────────────
+
+    /// <summary>
+    /// Build a BoardState from a 26-element on-roll-relative point array
+    /// ("Mop" — the shape used by BgDataTypes_Lib's IDecisionFilterData.Board
+    /// and PositionData.Mop). Layout matches BoardState.Points exactly:
+    /// [0] = opponent bar, [1..24] = playing surface, [25] = on-roll bar;
+    /// positive = on-roll's checkers, negative = opponent's.
+    /// HighPointOccupied is recomputed from the copied points.
+    /// No checker-count or sign validation is performed — pseudoboards
+    /// (e.g., cube-decision references) are legitimate inputs.
+    /// </summary>
+    public static BoardState FromMop(IReadOnlyList<int> mop)
+    {
+        ArgumentNullException.ThrowIfNull(mop);
+        if (mop.Count != 26)
+            throw new ArgumentException(
+                $"Mop must have exactly 26 elements; got {mop.Count}.", nameof(mop));
+
+        var s = new BoardState();
+        for (int i = 0; i < 26; i++)
+            s.Points[i] = mop[i];
+        s.RecalcHighPoint();
+        return s;
+    }
+
+    /// <summary>
+    /// Return Points as a fresh 26-element list — same layout as FromMop accepts.
+    /// Defensive copy: subsequent mutations of this BoardState do not affect
+    /// the returned list, and vice versa.
+    /// </summary>
+    public IReadOnlyList<int> ToMop()
+    {
+        var copy = new int[26];
+        Array.Copy(Points, copy, 26);
+        return copy;
+    }
+
     // ── Standard starting positions ───────────────────────────────
 
     /// <summary>
