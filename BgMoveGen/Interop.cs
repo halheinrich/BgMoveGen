@@ -1,5 +1,6 @@
 ﻿using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using BgDataTypes_Lib;
 
 namespace BgMoveGen;
 
@@ -77,13 +78,13 @@ public static unsafe class Interop
             if (count >= bufferCapacity) break;
 
             for (int i = 0; i < play.Count; i++)
-                MoveGenerator.ApplyMove(_state, play[i]);
+                _state.ApplyMove(play[i]);
 
             ToExternalFlipped(_state, offPlayer, offOpponent, play, &outputBuffer[count]);
             count++;
 
             for (int i = play.Count - 1; i >= 0; i--)
-                MoveGenerator.UndoMove(_state, play[i]);
+                _state.UndoMove(play[i]);
         }
 
         return count;

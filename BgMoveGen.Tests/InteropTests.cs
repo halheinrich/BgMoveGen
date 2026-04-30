@@ -1,5 +1,6 @@
 ﻿using Xunit;
 using BgMoveGen;
+using BgDataTypes_Lib;
 using static BgMoveGen.Interop;
 
 namespace BgMoveGen.Tests;

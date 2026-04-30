@@ -1,3 +1,5 @@
+using BgDataTypes_Lib;
+
 namespace BgMoveGen;
 
 /// <summary>
@@ -170,7 +172,7 @@ public sealed class MoveEntryState
 
         var last = _appliedMoves[^1];
         _appliedMoves.RemoveAt(_appliedMoves.Count - 1);
-        MoveGenerator.UndoMove(_currentState, last);
+        _currentState.UndoMove(last);
         _completedPlay = null;
         RebuildCandidatePlays();
         RecomputeLegalNextClicks();
@@ -195,7 +197,7 @@ public sealed class MoveEntryState
 
     private void CommitMove(Move m)
     {
-        MoveGenerator.ApplyMove(_currentState, m);
+        _currentState.ApplyMove(m);
         _appliedMoves.Add(m);
         _selectedSource = null;
         RebuildCandidatePlays();

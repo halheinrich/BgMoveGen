@@ -12,4 +12,8 @@
     <InternalsVisibleTo Include="BgMoveGen.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\..\BgDataTypes_Lib\BgDataTypes_Lib\BgDataTypes_Lib.csproj" />
+  </ItemGroup>
+
 </Project>

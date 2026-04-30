@@ -18,9 +18,14 @@ https://github.com/halheinrich/BgMoveGen — branch `main`.
 
 ## Depends on
 
-Standalone. No C# dependencies. BgRLEngine is a downstream consumer via the
-NativeAOT interop surface, but that arrow points the other way — BgMoveGen
-knows nothing about it.
+`BgDataTypes_Lib` — for `Move`, `Play`, and `BoardState`. The shared-data
+layer owns the move primitives and the mutable board representation;
+BgMoveGen contributes the move-generation algorithms over them. The split
+keeps the data shape reusable from non-move-gen consumers (game substrate,
+diagram rendering, filters) without dragging them through this library.
+
+BgRLEngine is a downstream consumer via the NativeAOT interop surface, but
+that arrow points outward — BgMoveGen knows nothing about it.
 
 ## Directory tree
 
@@ -28,91 +33,34 @@ knows nothing about it.
 BgMoveGen.slnx
 BgMoveGen/
   BgMoveGen.csproj
-  BoardState.cs        — int[26] board, HighPointOccupied, starting positions
-  Move.cs              — (FrPt, ToPt) record struct
-  Play.cs              — fixed 4-slot Move buffer
-  MoveGenerator.cs     — GeneratePlays / GenerateStates / EnumerateStates /
-                         NextMove / ApplyMove / UndoMove / Reference_GeneratePlays
+  MoveGenerator.cs       — GeneratePlays / GenerateStates / EnumerateStates /
+                           NextMove / SingleMoves / IsLegalPlay / ApplyPlay /
+                           Reference_GeneratePlays
   MoveNotationFormatter.cs — Play → standard notation ("8/5(2)", "24/18*")
-  Interop.cs           — NativeAOT exports + blittable BgBoardState
+  MoveEntryState.cs      — stateful click-by-click Play assembly
+  Interop.cs             — NativeAOT exports + blittable BgBoardState
 BgMoveGen.Tests/
   BgMoveGen.Tests.csproj
   MoveGeneratorTests.cs
   MoveNotationFormatterTests.cs
+  MoveEntryStateTests.cs
   InteropTests.cs
 ```
 
 ## Architecture
 
-### Board representation
-
-- `int[26]` array. `Points[0]` = opponent bar. `Points[1..24]` = playing
-  surface. `Points[25]` = on-roll player's bar.
-- **Perspective is always on-roll.** Positive values = on-roll player's
-  checkers, negative = opponent's. Board is flipped between turns by the
-  caller (`generate_successor_states` returns pre-flipped successors).
-- `HighPointOccupied`: highest point (1–25) with a player checker, 0 if none.
-  Updated incrementally by `ApplyMove` / `UndoMove`. Bear-off legal iff
-  `HighPointOccupied <= 6`.
-- Borne-off checkers are not tracked inside `BoardState` — they simply leave
-  the board. Off counts live in `BgBoardState` for interop only.
-- `BoardState` is mutable by design. **No heap allocations in the hot path.**
-
-### Core types
-
-```
-BoardState     — int[26] + HighPointOccupied. Mutable.
-                 Static factories: Standard(), Nackgammon(), Bg960(seed?).
-Move           — readonly record struct (FrPt, ToPt).
-                 FrPt: 1–24 (board) or 25 (bar).
-                 ToPt: >0 regular, 0 bear off, <0 hit (land on |ToPt|).
-Play           — fixed 4-slot buffer of Moves, value type.
-MoveGenerator  — static: GeneratePlays, GenerateStates, EnumerateStates,
-                 GenerateDoubles, GenerateNonDoubles, NextMove,
-                 ApplyMove, UndoMove, Reference_GeneratePlays.
-MoveNotationFormatter — static: Format(Play) → standard notation string.
-                 Collapses same-checker chains (bidirectional), groups
-                 identical adjacent chains with "(n)" count suffix.
-Interop        — NativeAOT exports + BgBoardState (blittable layout below).
-                 MaxSuccessors = 100 (4 × 25 theoretical max for doubles).
-```
-
-### Move encoding
-
-`Move(FrPt, ToPt)` stores everything `ApplyMove` / `UndoMove` need:
-
-- Regular: `Move(13, 7)` — 13 → 7.
-- Bear off: `Move(4, 0)`.
-- Hit: `Move(13, -12)` — land on 12, send opponent blot to `Points[0]`.
-- Formula: `ToPt = FrPt <= die ? 0 : FrPt - die`.
-- Undo reverses apply. For hits, restore the blot. For bear-off, put the
-  checker back. `FrPt > HighPointOccupied` after undo triggers update.
+Two optimised generation paths over `BgDataTypes_Lib.BoardState`'s mutable
+apply/undo primitives, plus a brute-force reference implementation used as
+ground truth for tests.
 
 ### Apply/undo pattern
 
-```
-MoveGenerator.ApplyMove(state, move);
-// ... recurse or continue ...
-MoveGenerator.UndoMove(state, move);
-```
-
-`HighPointOccupied` tracking:
-
-- **Apply**: if `FrPt == HighPointOccupied` and `Points[FrPt] == 0` after
-  decrement, scan down from `FrPt - 1` to find the new high.
-- **Undo**: if `FrPt > HighPointOccupied`, set it to `FrPt`. Player can never
-  move backward, so `ToPt` never raises `HighPointOccupied` during apply.
-
-### NextMove iterator
-
-```
-bool NextMove(BoardState state, int die, int prevFrPt, out Move move)
-```
-
-Finds one legal move scanning from `prevFrPt - 1` downward. First call:
-`prevFrPt = 26` (starts from the bar at 25). Subsequent calls: pass
-`lastMove.FrPt` to advance, or `lastMove.FrPt + 1` to allow the same point
-again (same-checker continuation).
+Hot-path consumption uses `BoardState.ApplyMove(Move)` /
+`BoardState.UndoMove(Move)` instance methods (defined in BgDataTypes_Lib).
+These maintain `HighPointOccupied` incrementally with no allocation; the
+generator recurses by mutating the input state in place and undoing on the
+way out. See BgDataTypes_Lib's INSTRUCTIONS for the data-side semantics
+(point layout, `HighPointOccupied` invariant, hit / bear-off encoding).
 
 ### Doubles generation — ordered, no dedup
 
@@ -140,6 +88,33 @@ Two-different-checker plays are never duplicated because the `FrPt` ordering
 constraint is symmetric — the same pair appears the same way in both passes.
 Both passes enforce must-use-both-dice and must-use-larger-die.
 
+### NextMove iterator
+
+```
+bool NextMove(BoardState state, int die, int prevFrPt, out Move move)
+```
+
+Finds one legal move scanning from `prevFrPt - 1` downward. First call:
+`prevFrPt = 26` (starts from the bar at 25). Subsequent calls: pass
+`lastMove.FrPt` to advance, or `lastMove.FrPt + 1` to allow the same point
+again (same-checker continuation).
+
+### Validating turn-boundary apply
+
+`MoveGenerator.ApplyPlay(state, play, die1, die2)` is the validating wrapper
+around `BoardState.ApplyPlay`: it re-runs `GeneratePlays` and checks the
+input play's `DeduplicationKey` against the legal set, throwing
+`ArgumentException` on mismatch. The contract is **throw-before-mutate**:
+on an illegal play, `state` is left byte-for-byte unchanged so callers can
+recover without a defensive clone.
+
+`MoveGenerator.IsLegalPlay(state, play, die1, die2)` is the standalone
+predicate used by the wrapper; both are the simple-correct re-enumeration
+implementation. Not hot-path — callers running tight loops should drive
+`GeneratePlays` directly. The unvalidated turn-boundary primitive
+(`state.ApplyPlay(play)`) remains available for callers that have already
+proven legality.
+
 ### Interop layout
 
 BgRLEngine hands in and expects back:
@@ -161,32 +136,25 @@ reverse `points`, swap bars, swap off counts) so the next call is already
 oriented correctly. `get_starting_position` does **not** flip — output is
 from the on-roll player's perspective.
 
+`BgBoardState` (the blittable struct above) is local to `Interop.cs` — it
+exists only to marshal across the native boundary and is distinct from
+`BgDataTypes_Lib.BoardState`. The marshaller (`FromExternal` /
+`ToExternalFlipped` / `ToExternal`) translates between the two.
+
 ### Bg960 random starting position
 
-`BoardState.Bg960(seed?)` generates a symmetric random opening satisfying:
-
-- **Symmetry:** each made point on the player side mirrors to `25 - pt` on
-  the opponent side.
-- **Quadrant coverage:** at least one made point in every quadrant (1–6,
-  7–12, 13–18, 19–24). Mirror points are blocked at selection time so the
-  constraint cannot conflict with itself.
-- **Made-point count:** sampled from a weighted distribution skewed toward
-  4–5 points (weights: 2→1, 3→3, 4→10, 5→10, 6→5, 7→2). Capped at 7 since
-  every made point needs ≥ 2 checkers and each side has 15.
-- **Per-point checker count:** stars-and-bars over the made points with a
-  min-2 floor.
-- **Pip floor:** total pip count must be ≥ 100. Failing positions are
-  rejected and the outer loop retries, up to 1000 attempts before throwing.
+Generated by `BoardState.Bg960(seed?)` in BgDataTypes_Lib — see that
+subproject's INSTRUCTIONS for the constraints (symmetry, quadrant coverage,
+mirror conflicts, pip-floor retry loop). BgMoveGen exposes it through the
+`get_starting_position` interop export (variant 2).
 
 ### Design principles
 
 - Zero allocation in the hot path: apply/undo mutates in place, no
   `BoardState.Copy()`.
-- Incremental state tracking: `HighPointOccupied` is updated on apply/undo,
-  never rescanned except when emptying the highest point.
 - Dedup without collections: canonical ordering for doubles, avoidance for
   non-doubles — no `HashSet` in the inner loop.
-- Correctness is validated against a reference implementation rather than
+- Correctness validated against a reference implementation rather than
   asserted structurally (see Validation).
 
 ### Validation
@@ -198,13 +166,15 @@ from the on-roll player's perspective.
   harness comparing optimized `GeneratePlays` to `Reference_GeneratePlays`
   by board-state set equality. Extended by adding `[InlineData]` rows; the
   default set covers all 21 opening rolls.
-- Test categories: `BoardState` setup (checker counts, `HighPointOccupied`,
-  bear-off eligibility); apply/undo round-trip; single-move generation (bar
+- Test categories: apply/undo round-trip; single-move generation (bar
   entry, regular, bear-off exact and overshoot, ordering); reference
-  correctness; `GenerateStates` / `EnumerateStates` API; performance
-  benchmarks; interop (successor count, flip correctness, off-count
-  tracking, checker conservation, pass detection, Bg960 conservation and
-  seed reproducibility).
+  correctness; `GenerateStates` / `EnumerateStates` API; `IsLegalPlay` /
+  `ApplyPlay` validation contract (legality round-trip, illegal-input
+  throw, throw-before-mutate state preservation, dice-order invariance,
+  closed-out empty-pass case); performance benchmarks; interop (successor
+  count, flip correctness, off-count tracking, checker conservation, pass
+  detection, Bg960 conservation and seed reproducibility); MoveEntryState
+  click-by-click assembly.
 
 ## Public API
 
@@ -218,17 +188,33 @@ List<Play> plays = MoveGenerator.GeneratePlays(state, die1, die2);
 List<BoardState> states = MoveGenerator.GenerateStates(state, die1, die2);
 
 // Lazy iterator — for early termination (alpha-beta, first-legal-move).
-// Yielded BoardState is a shared mutable buffer; clone via Copy() if kept.
 foreach (var successor in MoveGenerator.EnumerateStates(state, die1, die2))
 {
     float value = Evaluate(successor);
     if (value > bestValue) { bestValue = value; bestState = successor.Copy(); }
 }
+
+// Validating turn-boundary primitives.
+bool legal = MoveGenerator.IsLegalPlay(state, play, die1, die2);
+MoveGenerator.ApplyPlay(state, play, die1, die2);   // throws on illegal play
 ```
 
-All three enforce must-use-both-dice and must-use-larger-die. A pass is
-represented as a single successor identical to the input board (flipped by
-the interop layer).
+`GeneratePlays` / `GenerateStates` / `EnumerateStates` enforce
+must-use-both-dice and must-use-larger-die. A pass is represented as a
+single successor identical to the input board (flipped by the interop
+layer).
+
+`IsLegalPlay` matches by `Play.DeduplicationKey()` — order- and
+hit-invariant. `ApplyPlay` is the validating wrapper around
+`BoardState.ApplyPlay`; on rejection, the input state is unchanged.
+The unvalidated form (`state.ApplyPlay(play)`) remains available.
+
+Apply/undo at the move level are now instance methods on `BoardState`
+(defined in BgDataTypes_Lib): `state.ApplyMove(move)` /
+`state.UndoMove(move)`. The earlier static
+`MoveGenerator.ApplyMove(state, move)` / `UndoMove(state, move)` were
+deleted in this session — the duplicate surface was an artefact of the
+data type's previous home.
 
 ### Managed — `MoveNotationFormatter`
 
@@ -245,6 +231,13 @@ collapse to "(n)" — the "*" follows the count, "(n)*", and is applied if
 **any** constituent chain hit), and same-checker chain collapse across
 multiple legs. Chain matching is bidirectional — legs emitted in either
 time order collapse the same way.
+
+### Managed — `MoveEntryState`
+
+Stateful click-by-click `Play` assembly. Anchored on
+`MoveGenerator.GeneratePlays` as the canonical legality reference. See
+`MoveEntryState.cs` xmldoc and the Deferred entry in the umbrella
+INSTRUCTIONS for the click-semantics revisit planned after Phase 1 ships.
 
 ### Native — NativeAOT exports
 
@@ -273,30 +266,40 @@ int get_version();
 
 - **Bearing-off overshoot.** Legal only from the highest occupied point in
   the home board (`HighPointOccupied`). The die must exceed `FrPt` *and*
-  `FrPt == HighPointOccupied`. Easy to get wrong.
+  `FrPt == HighPointOccupied`. The `NextMove` iterator and `TryMakeMove`
+  helper enforce this — code that hand-builds bear-off moves outside the
+  generator must respect the rule. (The data primitive `Move(FrPt, 0)`
+  itself is encodable for any `FrPt`; legality is the generator's job.)
 - **Same-checker dedup (non-doubles).** Different die orderings for the
   same checker produce the same board state when neither intermediate has
   a blot and both intermediates are reachable. Handled by the pass-2
   avoidance check — three conditions, all three must hold to skip.
-- **Mirror conflicts in Bg960.** Point `i` and point `25 - i` can never
-  both be made by the player (they'd collide under symmetry). The
-  generator tracks a blocked set as it picks quadrant representatives.
+- **Mirror conflicts in Bg960 validation.** Point `i` and point `25 - i`
+  can never both be made by the player. The constraint lives inside
+  `BoardState.Bg960` (BgDataTypes_Lib); BgMoveGen consumes the result.
 - **Interop `_state` is static and not thread-safe.** One OS process per
   caller is fine (BgRLEngine's current model). If multi-thread use ever
   becomes needed, change to `[ThreadStatic]`. Interop tests must run
   sequentially — enforced via `[Collection("Interop")]`.
-- **Pip-count integer width.** `checker_count * point_index` stays well
-  inside `int` range but overflows `byte`. Use `int` or `short`.
-- **`EnumerateStates` yields a shared buffer.** Consumers that retain
-  successors across iterations must call `.Copy()`.
+- **`EnumerateStates` yields fresh copies, not a shared buffer.** Every
+  yielded `BoardState` is an independent `Copy()` of the input; consumers
+  are free to retain or discard without further cloning. The previous
+  doc claim of a shared mutable buffer never matched the implementation.
+- **`IsLegalPlay` and `ApplyPlay` are not hot-path.** Both re-enumerate
+  via `GeneratePlays`. Acceptable for turn-boundary validation; for
+  inner-loop repeated checks, drive the generator directly.
+- **`Play` equivalence is hit-invariant.** `IsLegalPlay` matches by
+  `DeduplicationKey`, which collapses hit and non-hit forms of the same
+  `(FrPt, |ToPt|)` multiset. A play that lists `Move(24, 18)` will round-
+  trip true even when the only legal form is the hit `Move(24, -18)`.
+  This is intentional — the dedup contract is order- and hit-invariant —
+  but consumers wanting hit-sensitive equivalence must compare moves
+  directly, not via `IsLegalPlay`.
 
-## Next steps
+## Subproject-internal next steps
 
-- Profile and shrink remaining allocations (`List<Play>` / `List<BoardState>`
-  results, `Play` struct handling on the boundary).
+- Profile and shrink remaining allocations (`List<Play>` /
+  `List<BoardState>` results, `Play` struct handling on the boundary).
 - Extend the `Optimized_MatchesReference` harness with more positions: bar
   entry with and without blockers, late-bearoff edge cases, near-blocked
   positions, contact/race transitions.
-- Consider exposing pip count, race detection, and perspective flip on
-  `BoardState` as first-class methods if consumers grow beyond the current
-  interop surface.

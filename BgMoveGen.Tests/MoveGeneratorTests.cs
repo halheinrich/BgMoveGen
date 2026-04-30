@@ -1,4 +1,5 @@
 using BgMoveGen;
+using BgDataTypes_Lib;
 
 namespace BgMoveGen.Tests;
 
@@ -84,11 +85,11 @@ public class ApplyUndoTests
         var original = state.Copy();
         var move = new Move(13, 8); // 13-pt to 8-pt (die 5)
 
-        MoveGenerator.ApplyMove(state, move);
+        state.ApplyMove(move);
         Assert.Equal(4, state.Points[13]);
         Assert.Equal(4, state.Points[8]);
 
-        MoveGenerator.UndoMove(state, move);
+        state.UndoMove(move);
         for (int i = 0; i <= 25; i++)
             Assert.Equal(original.Points[i], state.Points[i]);
         Assert.Equal(original.HighPointOccupied, state.HighPointOccupied);
@@ -105,12 +106,12 @@ public class ApplyUndoTests
 
         var move = new Move(13, -12); // hit on 12-pt
 
-        MoveGenerator.ApplyMove(state, move);
+        state.ApplyMove(move);
         Assert.Equal(1, state.Points[13]);
         Assert.Equal(1, state.Points[12]); // player now
         Assert.Equal(-1, state.Points[0]); // opponent bar
 
-        MoveGenerator.UndoMove(state, move);
+        state.UndoMove(move);
         for (int i = 0; i <= 25; i++)
             Assert.Equal(original.Points[i], state.Points[i]);
         Assert.Equal(original.HighPointOccupied, state.HighPointOccupied);
@@ -127,11 +128,11 @@ public class ApplyUndoTests
 
         var move = new Move(25, 22); // enter on 22-pt (die 3)
 
-        MoveGenerator.ApplyMove(state, move);
+        state.ApplyMove(move);
         Assert.Equal(0, state.Points[25]);
         Assert.Equal(1, state.Points[22]);
 
-        MoveGenerator.UndoMove(state, move);
+        state.UndoMove(move);
         Assert.Equal(original.Points[25], state.Points[25]);
         Assert.Equal(0, state.Points[22]);
         Assert.Equal(original.HighPointOccupied, state.HighPointOccupied);
@@ -149,10 +150,10 @@ public class ApplyUndoTests
 
         var move = new Move(4, 0); // bear off from 4-pt
 
-        MoveGenerator.ApplyMove(state, move);
+        state.ApplyMove(move);
         Assert.Equal(4, state.Points[4]);
 
-        MoveGenerator.UndoMove(state, move);
+        state.UndoMove(move);
         Assert.Equal(original.Points[4], state.Points[4]);
         Assert.Equal(original.HighPointOccupied, state.HighPointOccupied);
     }
@@ -167,10 +168,10 @@ public class ApplyUndoTests
         Assert.Equal(13, state.HighPointOccupied);
 
         var move = new Move(13, 7); // move it down
-        MoveGenerator.ApplyMove(state, move);
+        state.ApplyMove(move);
         Assert.Equal(7, state.HighPointOccupied); // scanned down
 
-        MoveGenerator.UndoMove(state, move);
+        state.UndoMove(move);
         Assert.Equal(13, state.HighPointOccupied); // restored
     }
 }
@@ -304,7 +305,7 @@ public class ReferenceCorrectnessTests
     private static long ApplyAndHash(BoardState state, Play play)
     {
         for (int i = 0; i < play.Count; i++)
-            MoveGenerator.ApplyMove(state, play[i]);
+            state.ApplyMove(play[i]);
 
         long hash = unchecked((long)0xcbf29ce484222325);
         for (int i = 0; i < 26; i++)
@@ -314,7 +315,7 @@ public class ReferenceCorrectnessTests
         }
 
         for (int i = play.Count - 1; i >= 0; i--)
-            MoveGenerator.UndoMove(state, play[i]);
+            state.UndoMove(play[i]);
 
         return hash;
     }
@@ -402,7 +403,7 @@ public class GenerateStatesTests
         {
             var expected = state.Copy();
             for (int j = 0; j < plays[i].Count; j++)
-                MoveGenerator.ApplyMove(expected, plays[i][j]);
+                expected.ApplyMove(plays[i][j]);
 
             for (int p = 0; p < 26; p++)
                 Assert.Equal(expected.Points[p], states[i].Points[p]);
@@ -509,5 +510,190 @@ public class PerformanceTests
 
         Assert.True(usPerCall < 1000,
             $"generate_plays averaged {usPerCall:F1}us/call — target is <10us");
+    }
+}
+
+public class IsLegalPlayTests
+{
+    [Fact]
+    public void Standard_LegalPlay_ReturnsTrue()
+    {
+        // 24/18 13/9 with a 6-4 — drawn from the legal-play set, so it must
+        // round-trip true under IsLegalPlay.
+        var state = BoardState.Standard();
+        var legal = MoveGenerator.GeneratePlays(state, 6, 4);
+        Assert.NotEmpty(legal);
+
+        foreach (var play in legal)
+            Assert.True(MoveGenerator.IsLegalPlay(state, play, 6, 4));
+    }
+
+    [Fact]
+    public void Standard_DiceOrderInvariant()
+    {
+        // Re-running with dice swapped exercises that GeneratePlays canonicalises
+        // small/big internally — the legality answer must not depend on order.
+        var state = BoardState.Standard();
+        var play = new Play();
+        play.Add(new Move(24, 18));
+        play.Add(new Move(13, 9));
+
+        Assert.True(MoveGenerator.IsLegalPlay(state, play, 6, 4));
+        Assert.True(MoveGenerator.IsLegalPlay(state, play, 4, 6));
+    }
+
+    [Fact]
+    public void Standard_IllegalDestination_ReturnsFalse()
+    {
+        // 24/18 lands legally; 13/8 cannot use a 4 from 13 (lands on 8 — but
+        // pairing it with the only 4-or-6 source on a 6-4 from Standard means
+        // we need 13/9 with the 4. Build a clearly-illegal play: 24/17 (uses 7).
+        var state = BoardState.Standard();
+        var bogus = new Play();
+        bogus.Add(new Move(24, 17));   // distance 7 — neither die
+        bogus.Add(new Move(13, 9));
+
+        Assert.False(MoveGenerator.IsLegalPlay(state, bogus, 6, 4));
+    }
+
+    [Fact]
+    public void Standard_TooFewMoves_ReturnsFalse()
+    {
+        // Single-move "play" when both dice are usable — fails the must-use-both
+        // requirement, so cannot be in the legal set.
+        var state = BoardState.Standard();
+        var stub = new Play();
+        stub.Add(new Move(24, 18));   // uses the 6 only
+
+        Assert.False(MoveGenerator.IsLegalPlay(state, stub, 6, 4));
+    }
+
+    [Fact]
+    public void EmptyPlay_OnPositionWithLegalMoves_ReturnsFalse()
+    {
+        var state = BoardState.Standard();
+        var empty = new Play();
+
+        Assert.False(MoveGenerator.IsLegalPlay(state, empty, 6, 4));
+    }
+
+    [Fact]
+    public void EmptyPlay_OnClosedOutPosition_ReturnsTrue()
+    {
+        // On-roll has a checker on the bar; opponent has every entry point
+        // (19..24) made — no legal entry. The legal-play set is the single empty
+        // pass play, so an empty-play probe must come back true.
+        var state = new BoardState();
+        state.Points[25] = 1;
+        for (int i = 19; i <= 24; i++) state.Points[i] = -2;
+        state.RecalcHighPoint();
+
+        var empty = new Play();
+        Assert.True(MoveGenerator.IsLegalPlay(state, empty, 6, 4));
+    }
+
+    [Fact]
+    public void HitInvariant_DeduplicationKey_CrossesHitNonHit()
+    {
+        // DeduplicationKey is order- and hit-invariant by contract. A play that
+        // differs from a legal one only in the hit flag still matches by key.
+        // This pins the documented contract — if a future maintainer tightens
+        // the equivalence to be hit-sensitive, this test fails loud.
+        var state = new BoardState();
+        state.Points[24] = 2;
+        state.Points[13] = 5;
+        state.Points[6] = 5;
+        state.Points[8] = 3;
+        state.Points[18] = -1;   // opponent blot — a 6 from 24 hits it
+        state.Points[1] = -2;
+        state.Points[12] = -5;
+        state.Points[17] = -2;
+        state.Points[19] = -5;
+        state.RecalcHighPoint();
+
+        // 24/18* is the legal hit move; 24/-18 (hit) round-trips through the
+        // generator naturally. We construct a play that lists 24/18 (no hit
+        // encoding) — the dedup key takes |ToPt|, so it should still match.
+        var noHitVariant = new Play();
+        noHitVariant.Add(new Move(24, 18));   // ToPt positive — non-hit form
+        noHitVariant.Add(new Move(13, 9));    // 13/9 with the 4
+
+        Assert.True(MoveGenerator.IsLegalPlay(state, noHitVariant, 6, 4));
+    }
+}
+
+public class ApplyPlayValidatingTests
+{
+    [Fact]
+    public void LegalPlay_AppliesAndFlips()
+    {
+        // Compare against direct state.ApplyPlay — they must produce the same
+        // post-state when the play is legal.
+        var direct = BoardState.Standard();
+        var validated = BoardState.Standard();
+
+        var play = new Play();
+        play.Add(new Move(24, 18));
+        play.Add(new Move(13, 9));
+
+        direct.ApplyPlay(play);
+        MoveGenerator.ApplyPlay(validated, play, 6, 4);
+
+        for (int i = 0; i <= 25; i++)
+            Assert.Equal(direct.Points[i], validated.Points[i]);
+        Assert.Equal(direct.HighPointOccupied, validated.HighPointOccupied);
+    }
+
+    [Fact]
+    public void IllegalPlay_Throws_ArgumentException()
+    {
+        var state = BoardState.Standard();
+        var bogus = new Play();
+        bogus.Add(new Move(24, 17));   // distance 7 — illegal under 6-4
+        bogus.Add(new Move(13, 9));
+
+        Assert.Throws<ArgumentException>(
+            () => MoveGenerator.ApplyPlay(state, bogus, 6, 4));
+    }
+
+    [Fact]
+    public void IllegalPlay_LeavesStateUnchanged()
+    {
+        // Pin the throw-before-mutate contract: an illegal ApplyPlay leaves
+        // the board byte-for-byte identical, so callers can recover without
+        // a defensive clone.
+        var state = BoardState.Standard();
+        int[] snapshotPoints = (int[])state.Points.Clone();
+        int snapshotHigh = state.HighPointOccupied;
+
+        var bogus = new Play();
+        bogus.Add(new Move(24, 17));
+        bogus.Add(new Move(13, 9));
+
+        Assert.Throws<ArgumentException>(
+            () => MoveGenerator.ApplyPlay(state, bogus, 6, 4));
+
+        Assert.Equal(snapshotPoints, state.Points);
+        Assert.Equal(snapshotHigh, state.HighPointOccupied);
+    }
+
+    [Fact]
+    public void EmptyPlay_OnClosedOutPosition_AppliesAsPass()
+    {
+        // No legal entry from the bar → only "play" is the empty pass. Validating
+        // ApplyPlay accepts it and the state flips perspective per BoardState.ApplyPlay.
+        var state = new BoardState();
+        state.Points[25] = 1;
+        for (int i = 19; i <= 24; i++) state.Points[i] = -2;
+        state.RecalcHighPoint();
+
+        var direct = state.Copy();
+        direct.ApplyPlay(new Play());
+
+        MoveGenerator.ApplyPlay(state, new Play(), 6, 4);
+
+        for (int i = 0; i <= 25; i++)
+            Assert.Equal(direct.Points[i], state.Points[i]);
+        Assert.Equal(direct.HighPointOccupied, state.HighPointOccupied);
     }
 }

@@ -1,14 +1,16 @@
+using BgDataTypes_Lib;
+
 namespace BgMoveGen;
 
 /// <summary>
 /// High-performance legal move generation for backgammon.
-/// 
+///
 /// Two optimized generation paths:
 ///   - GenerateDoubles: ordered generation (rearmost-first), no dedup needed.
 ///   - GenerateNonDoubles: ordered generation with avoidance-based dedup.
-/// 
+///
 /// Reference_GeneratePlays: brute-force ground truth for testing.
-/// 
+///
 /// Rules enforced:
 /// - Must enter from bar before moving other checkers
 /// - Must use both dice if possible; if only one, must use the larger
@@ -18,51 +20,6 @@ namespace BgMoveGen;
 /// </summary>
 public static class MoveGenerator
 {
-    // ── Core: Apply / Undo ────────────────────────────────────────
-
-    public static void ApplyMove(BoardState state, Move move)
-    {
-        state.Points[move.FrPt]--;
-        if (move.ToPt > 0)
-        {
-            state.Points[move.ToPt]++;
-        }
-        else if (move.ToPt < 0)
-        {
-            int dest = -move.ToPt;
-            state.Points[dest] = 1;
-            state.Points[0]--;
-        }
-        // ToPt == 0: bear off, checker disappears
-
-        if (move.FrPt == state.HighPointOccupied && state.Points[move.FrPt] == 0)
-        {
-            state.HighPointOccupied = 0;
-            for (int i = move.FrPt - 1; i >= 1; i--)
-            {
-                if (state.Points[i] > 0) { state.HighPointOccupied = i; break; }
-            }
-        }
-    }
-
-    public static void UndoMove(BoardState state, Move move)
-    {
-        if (move.ToPt > 0)
-        {
-            state.Points[move.ToPt]--;
-        }
-        else if (move.ToPt < 0)
-        {
-            int dest = -move.ToPt;
-            state.Points[dest] = -1;
-            state.Points[0]++;
-        }
-
-        state.Points[move.FrPt]++;
-        if (move.FrPt > state.HighPointOccupied)
-            state.HighPointOccupied = move.FrPt;
-    }
-
     // ── Core: Single move enumeration ─────────────────────────────
 
     /// <summary>
@@ -173,19 +130,19 @@ public static class MoveGenerator
         int fr1 = 26;
         while (NextMove(state, die, fr1, out Move m1))
         {
-            ApplyMove(state, m1);
+            state.ApplyMove(m1);
             int fr2 = m1.FrPt + 1;
             bool anyAt2 = false;
             while (NextMove(state, die, fr2, out Move m2))
             {
                 anyAt2 = true;
-                ApplyMove(state, m2);
+                state.ApplyMove(m2);
                 int fr3 = m2.FrPt + 1;
                 bool anyAt3 = false;
                 while (NextMove(state, die, fr3, out Move m3))
                 {
                     anyAt3 = true;
-                    ApplyMove(state, m3);
+                    state.ApplyMove(m3);
                     int fr4 = m3.FrPt + 1;
                     bool anyAt4 = false;
                     while (NextMove(state, die, fr4, out Move m4))
@@ -202,7 +159,7 @@ public static class MoveGenerator
                         play.Add(m1); play.Add(m2); play.Add(m3);
                         results.Add(play);
                     }
-                    UndoMove(state, m3);
+                    state.UndoMove(m3);
                     fr3 = m3.FrPt;
                 }
                 if (!anyAt3 && results.Count == 0)
@@ -211,7 +168,7 @@ public static class MoveGenerator
                     play.Add(m1); play.Add(m2);
                     results.Add(play);
                 }
-                UndoMove(state, m2);
+                state.UndoMove(m2);
                 fr2 = m2.FrPt;
             }
             if (!anyAt2 && results.Count == 0)
@@ -220,7 +177,7 @@ public static class MoveGenerator
                 play.Add(m1);
                 results.Add(play);
             }
-            UndoMove(state, m1);
+            state.UndoMove(m1);
             fr1 = m1.FrPt;
         }
 
@@ -256,7 +213,7 @@ public static class MoveGenerator
             if (toPt >= 1 && state.Points[toPt] >= -1)
             {
                 Move m1 = state.Points[toPt] == -1 ? new Move(25, -toPt) : new Move(25, toPt);
-                ApplyMove(state, m1);
+                state.ApplyMove(m1);
                 int fr2 = 26;
                 while (NextMove(state, bigDie, fr2, out Move m2))
                 {
@@ -266,7 +223,7 @@ public static class MoveGenerator
                     results.Add(play);
                     fr2 = m2.FrPt;
                 }
-                UndoMove(state, m1);
+                state.UndoMove(m1);
             }
 
             // Bar entry with bigDie
@@ -274,7 +231,7 @@ public static class MoveGenerator
             if (toPtB >= 1 && state.Points[toPtB] >= -1)
             {
                 Move m1 = state.Points[toPtB] == -1 ? new Move(25, -toPtB) : new Move(25, toPtB);
-                ApplyMove(state, m1);
+                state.ApplyMove(m1);
                 int fr2 = 26;
                 while (NextMove(state, smallDie, fr2, out Move m2))
                 {
@@ -302,7 +259,7 @@ public static class MoveGenerator
                     results.Add(play);
                     fr2 = m2.FrPt;
                 }
-                UndoMove(state, m1);
+                state.UndoMove(m1);
             }
         }
         else
@@ -319,7 +276,7 @@ public static class MoveGenerator
                 Move? m1 = TryMakeMove(state, frPt1, toPt, smallDie);
                 if (m1.HasValue)
                 {
-                    ApplyMove(state, m1.Value);
+                    state.ApplyMove(m1.Value);
                     int fr2 = frPt1 + 1; // allow same point
                     while (NextMove(state, bigDie, fr2, out Move m2))
                     {
@@ -329,7 +286,7 @@ public static class MoveGenerator
                         results.Add(play);
                         fr2 = m2.FrPt;
                     }
-                    UndoMove(state, m1.Value);
+                    state.UndoMove(m1.Value);
                 }
             }
 
@@ -343,7 +300,7 @@ public static class MoveGenerator
                 Move? m1 = TryMakeMove(state, frPt1, toPt, bigDie);
                 if (m1.HasValue)
                 {
-                    ApplyMove(state, m1.Value);
+                    state.ApplyMove(m1.Value);
                     int fr2 = frPt1 + 1; // allow same point
                     while (NextMove(state, smallDie, fr2, out Move m2))
                     {
@@ -379,7 +336,7 @@ public static class MoveGenerator
                         results.Add(play);
                         fr2 = m2.FrPt;
                     }
-                    UndoMove(state, m1.Value);
+                    state.UndoMove(m1.Value);
                 }
             }
         }
@@ -490,7 +447,7 @@ public static class MoveGenerator
         {
             var copy = state.Copy();
             for (int i = 0; i < play.Count; i++)
-                ApplyMove(copy, play[i]);
+                copy.ApplyMove(play[i]);
             states.Add(copy);
         }
         return states;
@@ -508,9 +465,53 @@ public static class MoveGenerator
         {
             var copy = state.Copy();
             for (int i = 0; i < play.Count; i++)
-                ApplyMove(copy, play[i]);
+                copy.ApplyMove(play[i]);
             yield return copy;
         }
+    }
+
+    /// <summary>
+    /// True iff <paramref name="play"/> is among the legal plays for
+    /// <paramref name="state"/> with dice <paramref name="die1"/>, <paramref name="die2"/>.
+    /// Equivalence is by <see cref="Play.DeduplicationKey"/> — order-invariant
+    /// and hit-invariant (matching the move-generation dedup contract).
+    ///
+    /// <para>
+    /// Implementation re-runs <see cref="GeneratePlays"/>; this is the simple
+    /// correct approach. Not a hot-path primitive — callers running tight loops
+    /// should drive the generator directly.
+    /// </para>
+    /// </summary>
+    public static bool IsLegalPlay(BoardState state, Play play, int die1, int die2)
+    {
+        var legal = GeneratePlays(state, die1, die2);
+        var key = play.DeduplicationKey();
+        foreach (var p in legal)
+            if (p.DeduplicationKey() == key)
+                return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Validating turn-boundary apply: throws <see cref="ArgumentException"/> if
+    /// <paramref name="play"/> is not legal for <paramref name="state"/> with
+    /// <paramref name="die1"/>, <paramref name="die2"/>; otherwise delegates to
+    /// <see cref="BoardState.ApplyPlay"/> (apply-all + flip).
+    ///
+    /// <para>
+    /// On rejection, <paramref name="state"/> is unchanged — validation runs
+    /// to completion before any mutation. Callers that already know the play is
+    /// legal can skip the check by invoking <see cref="BoardState.ApplyPlay"/>
+    /// directly.
+    /// </para>
+    /// </summary>
+    public static void ApplyPlay(BoardState state, Play play, int die1, int die2)
+    {
+        if (!IsLegalPlay(state, play, die1, die2))
+            throw new ArgumentException(
+                $"Play is not legal for the given state and dice ({die1}, {die2}).",
+                nameof(play));
+        state.ApplyPlay(play);
     }
 
     // ── Reference implementation (brute-force, obviously correct) ──
@@ -584,16 +585,16 @@ public static class MoveGenerator
         var unique = new List<Play>();
         foreach (var play in best)
         {
-            ApplyMove(state, play[0]);
+            state.ApplyMove(play[0]);
             for (int i = 1; i < play.Count; i++)
-                ApplyMove(state, play[i]);
+                state.ApplyMove(play[i]);
 
             long hash = BoardHash(state);
             if (seen.Add(hash))
                 unique.Add(play);
 
             for (int i = play.Count - 1; i >= 0; i--)
-                UndoMove(state, play[i]);
+                state.UndoMove(play[i]);
         }
 
         return unique.Count > 0 ? unique : [new Play()];
@@ -625,13 +626,13 @@ public static class MoveGenerator
         for (int i = 0; i < legalCount; i++)
         {
             var move = buffers[diceIndex][i];
-            ApplyMove(state, move);
+            state.ApplyMove(move);
             current.Add(move);
 
             Reference_Recurse(state, dice, diceIndex + 1, ref current, allPlays, buffers);
 
             current.RemoveLast();
-            UndoMove(state, move);
+            state.UndoMove(move);
         }
     }
 }
