@@ -17,6 +17,7 @@ Desktop.ini
 test_*.txt
 validate_counts*.py
 bench*.txt
+tree.txt
 
 ## Claude Code per-session working area
 .claude/

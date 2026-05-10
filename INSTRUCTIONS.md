@@ -33,12 +33,17 @@ that arrow points outward — BgMoveGen knows nothing about it.
 BgMoveGen.slnx
 BgMoveGen/
   BgMoveGen.csproj
-  MoveGenerator.cs       — GeneratePlays / GenerateStates / EnumerateStates /
-                           NextMove / SingleMoves / IsLegalPlay / ApplyPlay /
-                           Reference_GeneratePlays
+  MoveGenerator.cs       — public: GeneratePlays / GenerateStates /
+                           EnumerateStates / IsLegalPlay / ApplyPlay.
+                           Internal helpers: NextMove / SingleMoves
+                           (Span and List overloads) / GenerateDoubles /
+                           GenerateNonDoubles / Reference_GeneratePlays
   MoveNotationFormatter.cs — Play → standard notation ("8/5(2)", "24/18*")
-  MoveEntryState.cs      — stateful click-by-click Play assembly
-  Interop.cs             — NativeAOT exports + blittable BgBoardState
+  MoveEntryState.cs      — stateful click-by-click Play assembly;
+                           ClickOutcome enum (Illegal / SourceSelected /
+                           MoveCommitted / PlayCompleted)
+  Interop.cs             — NativeAOT exports + internal blittable
+                           BgBoardState
 BgMoveGen.Tests/
   BgMoveGen.Tests.csproj
   MoveGeneratorTests.cs
@@ -64,12 +69,13 @@ way out. See BgDataTypes_Lib's INSTRUCTIONS for the data-side semantics
 
 ### Doubles generation — ordered, no dedup
 
-Four nested `while` loops over `NextMove`. Each level passes
-`prevMove.FrPt + 1` to allow same-point moves, then advances to `move.FrPt`
-after each iteration. If a deeper level finds nothing, the partial result is
-recorded only if no full-depth results exist yet ("only one way to get fewer
-than 4"). The non-increasing `FrPt` constraint produces canonical ordering —
-no duplicates generated, no `HashSet` needed.
+Four nested `while` loops over `NextMove`. Level 1 starts from `26` (the
+sentinel above the bar). Levels 2–4 pass `prevMove.FrPt + 1` to allow
+same-point moves, then advance to `move.FrPt` after each iteration. If a
+deeper level finds nothing, the partial result is recorded only if no
+full-depth results exist yet ("only one way to get fewer than 4"). The
+non-increasing `FrPt` constraint produces canonical ordering — no
+duplicates generated, no `HashSet` needed.
 
 ### Non-doubles generation — avoidance-based dedup
 
@@ -136,10 +142,14 @@ reverse `points`, swap bars, swap off counts) so the next call is already
 oriented correctly. `get_starting_position` does **not** flip — output is
 from the on-roll player's perspective.
 
-`BgBoardState` (the blittable struct above) is local to `Interop.cs` — it
-exists only to marshal across the native boundary and is distinct from
-`BgDataTypes_Lib.BoardState`. The marshaller (`FromExternal` /
-`ToExternalFlipped` / `ToExternal`) translates between the two.
+`BgBoardState` is an `internal` nested struct of the public `Interop`
+class (`Interop.BgBoardState`); it exists only to marshal across the
+native boundary and is distinct from `BgDataTypes_Lib.BoardState`. The
+marshaller (`FromExternal` / `ToExternalFlipped` / `ToExternal`)
+translates between the two. The `[UnmanagedCallersOnly]` exports
+(`GenerateSuccessorStates`, `GetStartingPosition`, `GetVersion`) are
+also `internal` — they're inaccessible to managed callers regardless,
+and NativeAOT's export discovery is attribute-based.
 
 ### Bg960 random starting position
 
@@ -209,12 +219,10 @@ hit-invariant. `ApplyPlay` is the validating wrapper around
 `BoardState.ApplyPlay`; on rejection, the input state is unchanged.
 The unvalidated form (`state.ApplyPlay(play)`) remains available.
 
-Apply/undo at the move level are now instance methods on `BoardState`
+Apply/undo at the move level are instance methods on `BoardState`
 (defined in BgDataTypes_Lib): `state.ApplyMove(move)` /
-`state.UndoMove(move)`. The earlier static
-`MoveGenerator.ApplyMove(state, move)` / `UndoMove(state, move)` were
-deleted in this session — the duplicate surface was an artefact of the
-data type's previous home.
+`state.UndoMove(move)`. `MoveGenerator` does not expose move-level
+apply/undo — the data type owns that surface.
 
 ### Managed — `MoveNotationFormatter`
 
