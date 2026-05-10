@@ -35,7 +35,7 @@ public static unsafe class Interop
     // ── Blittable struct matching BgRLEngine's layout exactly ─────
 
     [StructLayout(LayoutKind.Sequential)]
-    public struct BgBoardState
+    internal struct BgBoardState
     {
         // points[0]=1-pt … points[23]=24-pt
         // positive = on-roll player, negative = opponent, player moves high→low
@@ -49,7 +49,7 @@ public static unsafe class Interop
     // ── NativeAOT export ──────────────────────────────────────────
 
     [UnmanagedCallersOnly(EntryPoint = "generate_successor_states")]
-    public static int GenerateSuccessorStates(
+    internal static int GenerateSuccessorStates(
         BgBoardState* input,
         int die1, int die2,
         BgBoardState* outputBuffer,
@@ -57,7 +57,7 @@ public static unsafe class Interop
         => GenerateSuccessorStatesCore(input, die1, die2, outputBuffer, bufferCapacity);
 
     [UnmanagedCallersOnly(EntryPoint = "get_version")]
-    public static int GetVersion() => Version;
+    internal static int GetVersion() => Version;
 
     /// <summary>
     /// Testable core — same logic, callable from managed code.
@@ -93,7 +93,7 @@ public static unsafe class Interop
     // ── Starting position export ──────────────────────────────────
 
     [UnmanagedCallersOnly(EntryPoint = "get_starting_position")]
-    public static int GetStartingPosition(
+    internal static int GetStartingPosition(
         int variant,    // 0=standard, 1=nackgammon, 2=bg960
         int seed,       // -1 = no seed; ignored for standard and nackgammon
         BgBoardState* output)

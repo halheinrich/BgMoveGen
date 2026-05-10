@@ -26,7 +26,7 @@ public static class MoveGenerator
     /// Find the next legal move scanning down from prevFrPt - 1.
     /// Returns true if a move was found. Zero heap allocations.
     /// </summary>
-    public static bool NextMove(BoardState state, int die, int prevFrPt, out Move move)
+    internal static bool NextMove(BoardState state, int die, int prevFrPt, out Move move)
     {
         move = default;
         int start = prevFrPt - 1;
@@ -91,7 +91,7 @@ public static class MoveGenerator
     /// Ordered: highest FrPt first (canonical order).
     /// Returns the number of moves written. Zero heap allocations.
     /// </summary>
-    public static int SingleMoves(BoardState state, int die, Span<Move> buffer)
+    internal static int SingleMoves(BoardState state, int die, Span<Move> buffer)
     {
         int count = 0;
         int prevFrPt = 26;
@@ -104,9 +104,9 @@ public static class MoveGenerator
     }
 
     /// <summary>
-    /// Convenience overload returning a List (allocates). For public API / tests.
+    /// Convenience overload returning a List (allocates). Used by tests.
     /// </summary>
-    public static List<Move> SingleMoves(BoardState state, int die)
+    internal static List<Move> SingleMoves(BoardState state, int die)
     {
         Span<Move> buffer = stackalloc Move[30];
         int count = SingleMoves(state, die, buffer);
@@ -123,7 +123,7 @@ public static class MoveGenerator
     /// Uses canonical ordering (non-increasing FrPt via NextMove) to avoid duplicates.
     /// If fewer than 4 dice can be used, there is exactly one result.
     /// </summary>
-    public static List<Play> GenerateDoubles(BoardState state, int die)
+    internal static List<Play> GenerateDoubles(BoardState state, int die)
     {
         var results = new List<Play>();
 
@@ -196,7 +196,7 @@ public static class MoveGenerator
     /// and produces the same board state).
     /// Enforces must-use-both-dice and must-use-larger-die rules.
     /// </summary>
-    public static List<Play> GenerateNonDoubles(BoardState state, int die1, int die2)
+    internal static List<Play> GenerateNonDoubles(BoardState state, int die1, int die2)
     {
         int smallDie = Math.Min(die1, die2);
         int bigDie = Math.Max(die1, die2);
@@ -521,7 +521,7 @@ public static class MoveGenerator
     /// every legal move sequence, then deduplicates by final board state.
     /// Slow but guaranteed correct. Used as the ground truth for testing.
     /// </summary>
-    public static List<Play> Reference_GeneratePlays(BoardState state, int die1, int die2)
+    internal static List<Play> Reference_GeneratePlays(BoardState state, int die1, int die2)
     {
         var allPlays = new List<Play>();
         var current = new Play();
