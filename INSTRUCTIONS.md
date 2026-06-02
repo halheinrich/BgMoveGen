@@ -121,6 +121,40 @@ implementation. Not hot-path — callers running tight loops should drive
 (`state.ApplyPlay(play)`) remains available for callers that have already
 proven legality.
 
+### MoveEntryState — state-based click legality
+
+`MoveEntryState` assembles a `Play` one click at a time. The subtle part is
+that `GeneratePlays` board-state-dedups equivalent die orderings of a
+combined single-checker move: with a non-double 5-1 it emits `11/5` only as
+`11→10→5`, never the equally-legal `11→6→5` (both intermediates open ⇒ same
+final state ⇒ one canonical play). The same collapse happens for doubles
+permutations and for bar-entry-then-hit (`bar/21 21/16*` is emitted; the
+equivalent `bar/20 20/16*` is not).
+
+So per-click legality is **not** anchored on the emitted move-lists. A click
+is accepted iff:
+
+1. it is a legal single move from the *current intermediate* state (using one
+   of the dice still to be played — enumerated via `SingleMoves`, which already
+   enforces bar-first, bear-off, and hit rules), **and**
+2. after applying it, the position can still complete — using the dice that
+   remain — to one of the final board states `GeneratePlays` produced
+   (`CanReachTarget`, a small DFS over remaining-dice orderings against the
+   precomputed target-state signature set).
+
+On completion the resulting board state identifies a unique generated play
+(the generator dedups by final state), and `CompletedPlay` is set to *that*
+canonical play — not the literal clicked moves. Two intermediate paths to the
+same final state therefore yield a `CompletedPlay` equal under
+`Play.Equals` / `DeduplicationKey` (so quiz scoring and `allPlays.Contains`
+match regardless of path); paths that reach genuinely different states (one
+hits an intermediate blot, the other doesn't) stay distinct.
+
+Dice bookkeeping: `_turnDice` (length = play length) is the multiset played
+this turn; `_remainingDice` tracks what's unconsumed, and each committed move
+records the die it used so `UndoLast` can restore it. Target states are keyed
+by an FNV-1a signature matching the generator's dedup hash.
+
 ### Interop layout
 
 BgRLEngine hands in and expects back:
@@ -243,11 +277,13 @@ time order collapse the same way.
 
 ### Managed — `MoveEntryState`
 
-Stateful click-by-click `Play` assembly. Anchored on
-`MoveGenerator.GeneratePlays` as the canonical legality reference. See
-`MoveEntryState.cs` xmldoc and the
-[umbrella `INSTRUCTIONS.md`](../INSTRUCTIONS.md) Deferred section for the
-click-semantics revisit.
+Stateful click-by-click `Play` assembly (two-click source→destination).
+Anchored on `MoveGenerator.GeneratePlays` as the canonical legality
+reference, but **by reachable board state, not by literal move-lists** —
+see Architecture and Pitfalls below. Public surface: `TryAddClick(int)`
+→ `ClickOutcome`, `LegalNextClicks`, `CompletedPlay`, `Current`,
+`SelectedSource`, `IsComplete`, `AppliedMoves`, `UndoLast()`,
+`UndoAll()`. Consumed by BgDiag_Razor's `BackgammonPlayEntry`.
 
 ### Native — NativeAOT exports
 
@@ -297,6 +333,15 @@ int get_version();
 - **`IsLegalPlay` and `ApplyPlay` are not hot-path.** Both re-enumerate
   via `GeneratePlays`. Acceptable for turn-boundary validation; for
   inner-loop repeated checks, drive the generator directly.
+- **`MoveEntryState` legality is state-based, not move-list-based.** Do not
+  "fix" entry by making `GeneratePlays` emit both die orderings of a combined
+  move — the distinct-outcome dedup is correct and RL state enumeration,
+  equity, and quiz `DeduplicationKey` scoring all depend on it. Entry instead
+  accepts any click that is a legal single move from the current state *and*
+  keeps a generated final state reachable, then canonicalizes the completed
+  `Play` by resulting board state. A click can be legal even though its move
+  appears in no emitted play (e.g. `8/5` then `5/4`, since `8/4` is emitted as
+  `8/7/4`). See the MoveEntryState architecture section.
 - **`Play` equivalence is hit-invariant.** `IsLegalPlay` matches by
   `DeduplicationKey`, which collapses hit and non-hit forms of the same
   `(FrPt, |ToPt|)` multiset. A play that lists `Move(24, 18)` will round-

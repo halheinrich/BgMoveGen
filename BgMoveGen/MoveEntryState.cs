@@ -38,12 +38,21 @@ public enum ClickOutcome
 /// <see cref="Move.ToPt"/>'s sign encoding (negative = hit, zero = bear off,
 /// positive = regular) is hidden from consumers — clicks use positive point indices.
 ///
-/// Doubles ordering ambiguity (e.g., 8/4(2) reachable via 8→4 then 4→0, or any chain
-/// permutation) is resolved canonically: the multiset of moves committed over the
-/// course of the play must be a multiset-subset of some play returned by
-/// <see cref="MoveGenerator.GeneratePlays"/>, and the user's click sequence must be
-/// a topological ordering of that multiset (chain dependencies are enforced by the
-/// per-click single-move legality check against the current intermediate state).
+/// Ordering ambiguity is resolved by board <i>state</i>, not by literal move-lists.
+/// <see cref="MoveGenerator.GeneratePlays"/> board-state-dedups equivalent die orderings
+/// of a combined single-checker move (e.g. with a non-double 5-1, <c>11/5</c> emitted
+/// only as <c>11→10→5</c>, never the equally-legal <c>11→6→5</c>) and likewise collapses
+/// doubles permutations. So per-click legality is <b>not</b> anchored on the emitted
+/// move-lists. A click is accepted iff (a) it is a legal single move from the current
+/// intermediate state, <b>and</b> (b) after it, the position can still complete — using
+/// the dice still to be played — to one of the final board states
+/// <see cref="MoveGenerator.GeneratePlays"/> produced. When the play completes, the
+/// resulting board state identifies a unique generated play (the generator dedups by
+/// final state), and <see cref="CompletedPlay"/> is set to <i>that</i> canonical play.
+/// Two different intermediate paths to the same final state therefore yield a
+/// <see cref="CompletedPlay"/> that compares equal under <see cref="Play.Equals(Play)"/> /
+/// <see cref="Play.DeduplicationKey"/>; paths that reach genuinely different states
+/// (e.g. one hits an intermediate blot, the other does not) stay distinct.
 ///
 /// Pass positions (no legal play): <see cref="IsComplete"/> is true at construction
 /// and <see cref="CompletedPlay"/> is the empty <see cref="Play"/>.
@@ -56,9 +65,18 @@ public sealed class MoveEntryState
     private readonly List<Play> _allPlays;
     private readonly int _maxMoveCount;
 
+    /// <summary>The dice to be played this turn, length <see cref="_maxMoveCount"/>.</summary>
+    private readonly List<int> _turnDice;
+
+    /// <summary>Final-board-state signature → the canonical generated play reaching it.</summary>
+    private readonly Dictionary<long, Play> _targetBySignature;
+
     private readonly BoardState _currentState;
     private readonly List<Move> _appliedMoves = new(4);
-    private List<Play> _candidatePlays;
+    /// <summary>Die consumed by each applied move (parallel to <see cref="_appliedMoves"/>).</summary>
+    private readonly List<int> _appliedDice = new(4);
+    /// <summary>Dice not yet consumed by an applied move.</summary>
+    private readonly List<int> _remainingDice = new(4);
     private int? _selectedSource;
     private HashSet<int> _legalNextClicks = [];
     private Play? _completedPlay;
@@ -80,10 +98,13 @@ public sealed class MoveEntryState
         _die2 = die2;
         _allPlays = MoveGenerator.GeneratePlays(_currentState, die1, die2);
         _maxMoveCount = _allPlays[0].Count;
-        _candidatePlays = [.. _allPlays];
+
+        _targetBySignature = BuildTargetIndex();
+        _turnDice = BuildTurnDice();
+        _remainingDice.AddRange(_turnDice);
 
         if (IsComplete)
-            _completedPlay = SnapshotAppliedAsPlay();
+            _completedPlay = CanonicalCompletedPlay();
 
         RecomputeLegalNextClicks();
     }
@@ -127,13 +148,13 @@ public sealed class MoveEntryState
         if (_selectedSource is int s)
         {
             // Awaiting destination: try to interpret `point` as a destination from s.
-            foreach (var m in legalMoves)
+            foreach (var (m, die) in legalMoves)
             {
                 if (m.FrPt != s) continue;
                 int destClick = DestClickPoint(m);
                 if (destClick == point)
                 {
-                    CommitMove(m);
+                    CommitMove(m, die);
                     return IsComplete ? ClickOutcome.PlayCompleted : ClickOutcome.MoveCommitted;
                 }
             }
@@ -141,7 +162,7 @@ public sealed class MoveEntryState
         }
 
         // Awaiting source (or replacing selection): is `point` a legal source for any next move?
-        foreach (var m in legalMoves)
+        foreach (var (m, _) in legalMoves)
         {
             if (m.FrPt == point)
             {
@@ -171,10 +192,12 @@ public sealed class MoveEntryState
         if (_appliedMoves.Count == 0) return;
 
         var last = _appliedMoves[^1];
+        int lastDie = _appliedDice[^1];
         _appliedMoves.RemoveAt(_appliedMoves.Count - 1);
+        _appliedDice.RemoveAt(_appliedDice.Count - 1);
         _currentState.UndoMove(last);
+        _remainingDice.Add(lastDie);
         _completedPlay = null;
-        RebuildCandidatePlays();
         RecomputeLegalNextClicks();
     }
 
@@ -187,31 +210,25 @@ public sealed class MoveEntryState
         Array.Copy(_initialPoints, _currentState.Points, 26);
         _currentState.HighPointOccupied = _initialHighPoint;
         _appliedMoves.Clear();
+        _appliedDice.Clear();
+        _remainingDice.Clear();
+        _remainingDice.AddRange(_turnDice);
         _selectedSource = null;
-        _completedPlay = null;
-        _candidatePlays = [.. _allPlays];
+        _completedPlay = IsComplete ? CanonicalCompletedPlay() : null;
         RecomputeLegalNextClicks();
     }
 
     // ── Internals ─────────────────────────────────────────────────
 
-    private void CommitMove(Move m)
+    private void CommitMove(Move m, int die)
     {
         _currentState.ApplyMove(m);
         _appliedMoves.Add(m);
+        _appliedDice.Add(die);
+        _remainingDice.Remove(die);
         _selectedSource = null;
-        RebuildCandidatePlays();
-        if (IsComplete) _completedPlay = SnapshotAppliedAsPlay();
+        if (IsComplete) _completedPlay = CanonicalCompletedPlay();
         RecomputeLegalNextClicks();
-    }
-
-    private void RebuildCandidatePlays()
-    {
-        var next = new List<Play>(_allPlays.Count);
-        foreach (var p in _allPlays)
-            if (IsMultisetSubset(_appliedMoves, p))
-                next.Add(p);
-        _candidatePlays = next;
     }
 
     private void RecomputeLegalNextClicks()
@@ -222,111 +239,169 @@ public sealed class MoveEntryState
             var legalMoves = ComputeLegalNextSingleMoves();
             if (_selectedSource is int s)
             {
-                foreach (var m in legalMoves)
+                foreach (var (m, _) in legalMoves)
                     if (m.FrPt == s) clicks.Add(DestClickPoint(m));
             }
             else
             {
-                foreach (var m in legalMoves) clicks.Add(m.FrPt);
+                foreach (var (m, _) in legalMoves) clicks.Add(m.FrPt);
             }
         }
         _legalNextClicks = clicks;
     }
 
     /// <summary>
-    /// Legal next single moves: across all surviving candidate plays, the moves
-    /// in their as-yet-unconsumed remainder that are legal as a single move from
-    /// the current intermediate state.
+    /// Legal next single moves from the current intermediate state: each move
+    /// that (a) is a legal single move using one of the dice still to be played,
+    /// and (b) keeps at least one generated final state reachable with the dice
+    /// that remain after it. Each move is paired with the die it consumes.
     /// </summary>
-    private List<Move> ComputeLegalNextSingleMoves()
+    private List<(Move move, int die)> ComputeLegalNextSingleMoves()
     {
-        var result = new List<Move>();
+        var result = new List<(Move, int)>();
         if (IsComplete) return result;
-        var seen = new HashSet<Move>();
 
-        foreach (var p in _candidatePlays)
+        var added = new HashSet<Move>();
+        // Snapshot distinct die values up front: the loop body mutates _remainingDice.
+        var distinctDice = new HashSet<int>(_remainingDice);
+        Span<Move> buffer = stackalloc Move[30];
+
+        foreach (int d in distinctDice)
         {
-            foreach (var m in RemainingMoves(_appliedMoves, p))
+            int count = MoveGenerator.SingleMoves(_currentState, d, buffer);
+            for (int i = 0; i < count; i++)
             {
-                if (!seen.Add(m)) continue;
-                if (IsLegalSingleMoveFromState(_currentState, m)) result.Add(m);
+                var m = buffer[i];
+                if (added.Contains(m)) continue;
+
+                _currentState.ApplyMove(m);
+                _remainingDice.Remove(d);
+                bool canComplete = CanReachTarget(_currentState, _remainingDice);
+                _remainingDice.Add(d);
+                _currentState.UndoMove(m);
+
+                if (canComplete)
+                {
+                    result.Add((m, d));
+                    added.Add(m);
+                }
             }
         }
         return result;
+    }
+
+    /// <summary>
+    /// True iff some ordering of <paramref name="remaining"/> dice, played as legal
+    /// single moves from <paramref name="state"/>, reaches one of the generated final
+    /// board states. Mutates <paramref name="state"/> and <paramref name="remaining"/>
+    /// transiently but restores both before returning.
+    /// </summary>
+    private bool CanReachTarget(BoardState state, List<int> remaining)
+    {
+        if (remaining.Count == 0)
+            return _targetBySignature.ContainsKey(Signature(state));
+
+        var tried = new HashSet<int>();
+        Span<Move> buffer = stackalloc Move[30];
+
+        for (int idx = 0; idx < remaining.Count; idx++)
+        {
+            int d = remaining[idx];
+            if (!tried.Add(d)) continue;
+
+            remaining.RemoveAt(idx);
+            int count = MoveGenerator.SingleMoves(state, d, buffer);
+            bool found = false;
+            for (int i = 0; i < count && !found; i++)
+            {
+                state.ApplyMove(buffer[i]);
+                if (CanReachTarget(state, remaining)) found = true;
+                state.UndoMove(buffer[i]);
+            }
+            remaining.Insert(idx, d);
+
+            if (found) return true;
+        }
+        return false;
     }
 
     private static int DestClickPoint(Move m) =>
         m.ToPt > 0 ? m.ToPt : (m.ToPt < 0 ? -m.ToPt : 0);
 
     /// <summary>
-    /// True if the multiset of `sub` is contained in the multiset of `super`'s moves.
+    /// Index each generated play by the signature of the board state it produces.
+    /// The generator dedups by final state, so signatures are distinct.
     /// </summary>
-    private static bool IsMultisetSubset(IReadOnlyList<Move> sub, Play super)
+    private Dictionary<long, Play> BuildTargetIndex()
     {
-        if (sub.Count > super.Count) return false;
-        Span<bool> used = stackalloc bool[super.Count];
-        foreach (var m in sub)
+        var map = new Dictionary<long, Play>(_allPlays.Count);
+        foreach (var p in _allPlays)
         {
-            bool matched = false;
-            for (int j = 0; j < super.Count; j++)
-            {
-                if (!used[j] && super[j].Equals(m))
-                {
-                    used[j] = true;
-                    matched = true;
-                    break;
-                }
-            }
-            if (!matched) return false;
+            for (int i = 0; i < p.Count; i++) _currentState.ApplyMove(p[i]);
+            map[Signature(_currentState)] = p;
+            for (int i = p.Count - 1; i >= 0; i--) _currentState.UndoMove(p[i]);
         }
-        return true;
+        return map;
     }
 
     /// <summary>
-    /// Multiset difference: moves of `play` minus moves of `applied`, in `play`'s order.
+    /// The multiset of dice played this turn, of length <see cref="_maxMoveCount"/>.
+    /// Doubles: the die value repeated. Non-doubles using both: both dice. Non-doubles
+    /// using one (the must-use-larger / only-one-playable case): the single die that
+    /// actually reaches a generated final state.
     /// </summary>
-    private static List<Move> RemainingMoves(IReadOnlyList<Move> applied, Play play)
+    private List<int> BuildTurnDice()
     {
-        var result = new List<Move>(play.Count);
-        Span<bool> usedInApplied = stackalloc bool[applied.Count == 0 ? 1 : applied.Count];
-        for (int j = 0; j < play.Count; j++)
+        var dice = new List<int>(4);
+        if (_maxMoveCount == 0) return dice; // pass
+
+        if (_die1 == _die2)
         {
-            var m = play[j];
-            bool foundInApplied = false;
-            for (int i = 0; i < applied.Count; i++)
-            {
-                if (!usedInApplied[i] && applied[i].Equals(m))
-                {
-                    usedInApplied[i] = true;
-                    foundInApplied = true;
-                    break;
-                }
-            }
-            if (!foundInApplied) result.Add(m);
+            for (int i = 0; i < _maxMoveCount; i++) dice.Add(_die1);
+            return dice;
         }
-        return result;
+
+        if (_maxMoveCount >= 2)
+        {
+            dice.Add(Math.Min(_die1, _die2));
+            dice.Add(Math.Max(_die1, _die2));
+            return dice;
+        }
+
+        // Non-doubles, exactly one die playable.
+        int big = Math.Max(_die1, _die2);
+        int small = Math.Min(_die1, _die2);
+        dice.Add(SingleDieReachesTarget(big) ? big : small);
+        return dice;
+    }
+
+    /// <summary>True iff a single legal move with <paramref name="die"/> from the
+    /// initial state lands on a generated final state. Called only at construction,
+    /// before any move is applied.</summary>
+    private bool SingleDieReachesTarget(int die)
+    {
+        Span<Move> buffer = stackalloc Move[30];
+        int count = MoveGenerator.SingleMoves(_currentState, die, buffer);
+        for (int i = 0; i < count; i++)
+        {
+            _currentState.ApplyMove(buffer[i]);
+            bool hit = _targetBySignature.ContainsKey(Signature(_currentState));
+            _currentState.UndoMove(buffer[i]);
+            if (hit) return true;
+        }
+        return false;
     }
 
     /// <summary>
-    /// Validate that <paramref name="m"/> is a legal single move from
-    /// <paramref name="s"/>. Doesn't need the die because <paramref name="m"/> is
-    /// drawn from a candidate play whose dice usage is already settled — this is a
-    /// state-side sanity check (chain dependency, hit-versus-regular encoding,
-    /// bar-must-enter-first, bear-off eligibility).
+    /// The canonical generated play matching the current (completed) board state.
+    /// Falls back to a literal snapshot of the applied moves if no match is found —
+    /// that should not happen and indicates a generation/entry contract mismatch.
     /// </summary>
-    private static bool IsLegalSingleMoveFromState(BoardState s, Move m)
+    private Play CanonicalCompletedPlay()
     {
-        if (m.FrPt < 1 || m.FrPt > 25) return false;
-        if (s.Points[25] > 0 && m.FrPt != 25) return false;
-        if (s.Points[m.FrPt] <= 0) return false;
-
-        if (m.ToPt > 0)
-            return s.Points[m.ToPt] >= 0;
-        if (m.ToPt < 0)
-            return s.Points[-m.ToPt] == -1;
-
-        // Bear off
-        return s.HighPointOccupied <= 6 && m.FrPt >= 1 && m.FrPt <= 6;
+        if (_targetBySignature.TryGetValue(Signature(_currentState), out var play))
+            return play;
+        return SnapshotAppliedAsPlay();
     }
 
     private Play SnapshotAppliedAsPlay()
@@ -334,5 +409,18 @@ public sealed class MoveEntryState
         var p = new Play();
         foreach (var m in _appliedMoves) p.Add(m);
         return p;
+    }
+
+    /// <summary>FNV-1a signature over the 26 board points — matches the generator's
+    /// board-state dedup hash, so equal positions get equal signatures.</summary>
+    private static long Signature(BoardState s)
+    {
+        long hash = unchecked((long)0xcbf29ce484222325);
+        for (int i = 0; i < 26; i++)
+        {
+            hash ^= s.Points[i];
+            hash = unchecked(hash * 0x100000001b3);
+        }
+        return hash;
     }
 }

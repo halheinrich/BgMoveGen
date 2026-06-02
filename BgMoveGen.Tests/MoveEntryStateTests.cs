@@ -498,33 +498,27 @@ public class MoveEntryStateTests
     // ── Constrained mid-game / candidate-narrowing ────────────────
 
     [Fact]
-    public void LegalNextClicks_PostFirstCommit_MatchesGeneratePlaysFiltered()
+    public void LegalNextClicks_PostFirstCommit_MatchesStateReachableMoves()
     {
         var initial = BoardState.Standard();
         var entry = new MoveEntryState(initial, 3, 1);
-        entry.TryAddClick(8); entry.TryAddClick(5);
+        entry.TryAddClick(8); entry.TryAddClick(5); // commit 8/5 (die 3); die 1 remains
 
-        // Expected: union of FrPts of "remaining" moves across plays containing (8,5).
-        var allPlays = MoveGenerator.GeneratePlays(initial, 3, 1);
+        // New contract: legality is by reachable board STATE, not by literal
+        // move-lists. After 8/5, every legal die-1 single move from the current
+        // board forms a legal 2-move play (it uses both dice) and so reaches a
+        // generated final state. Expected sources = FrPts of those die-1 moves.
         var expected = new HashSet<int>();
-        var first = new Move(8, 5);
-        foreach (var p in allPlays)
-        {
-            // Multiset: does p contain (8,5)?
-            bool contains = false;
-            for (int i = 0; i < p.Count; i++)
-                if (p[i].Equals(first)) { contains = true; break; }
-            if (!contains) continue;
-
-            for (int i = 0; i < p.Count; i++)
-            {
-                var m = p[i];
-                if (m.Equals(first)) { contains = false; continue; } // skip exactly one copy
-                expected.Add(m.FrPt);
-            }
-        }
+        Span<Move> buf = stackalloc Move[30];
+        int n = MoveGenerator.SingleMoves(entry.Current, 1, buf);
+        for (int i = 0; i < n; i++) expected.Add(buf[i].FrPt);
 
         Assert.Equal(expected, new HashSet<int>(entry.LegalNextClicks));
+
+        // Includes 5: entering 8/5 then 5/4 yields 8/4, which GeneratePlays emits
+        // canonically as 8/7/4 — a move-list that does NOT contain the move 8/5.
+        // The old literal-move-list anchoring wrongly excluded this source.
+        Assert.Contains(5, entry.LegalNextClicks);
     }
 
     [Fact]
@@ -559,5 +553,251 @@ public class MoveEntryStateTests
         // After 8→5: Points[8]=2, Points[5]=1.
         Assert.Equal(2, entry.Current.Points[8]);
         Assert.Equal(1, entry.Current.Points[5]);
+    }
+
+    // ── Combined single-checker moves: both die orderings ─────────
+    //
+    // Regression: GeneratePlays board-state-dedups equivalent die orderings
+    // (both intermediates open → same final square) to one canonical play.
+    // MoveEntryState must accept *either* physical path, not only the ordering
+    // the generator happened to emit, and must canonicalize the completed Play
+    // so it equals the generated one regardless of path taken.
+
+    private static BoardState SingleCheckerOn(int point)
+    {
+        var s = new BoardState();
+        s.Points[point] = 1;
+        s.RecalcHighPoint();
+        return s;
+    }
+
+    [Fact]
+    public void TryAddClick_CombinedSingleChecker_EmittedOrdering_11to10to5_Completes()
+    {
+        // One checker on 11, dice (5,1). Path 11→10 (die 1) → 5 (die 5).
+        var initial = SingleCheckerOn(11);
+        var entry = new MoveEntryState(initial, 5, 1);
+
+        Assert.Equal(ClickOutcome.SourceSelected, entry.TryAddClick(11));
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryAddClick(10));
+        Assert.Equal(ClickOutcome.SourceSelected, entry.TryAddClick(10));
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAddClick(5));
+
+        Assert.True(entry.IsComplete);
+        Assert.Equal(1, entry.Current.Points[5]);
+        var allPlays = MoveGenerator.GeneratePlays(initial, 5, 1);
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+    }
+
+    [Fact]
+    public void TryAddClick_CombinedSingleChecker_NonEmittedOrdering_11to6to5_Completes()
+    {
+        // Same position, the OTHER ordering: 11→6 (die 5) → 5 (die 1).
+        // GeneratePlays emits only 11/10/5 for this position; this path must
+        // still be enterable and canonicalize to the same Play.
+        var initial = SingleCheckerOn(11);
+        var entry = new MoveEntryState(initial, 5, 1);
+
+        Assert.Equal(ClickOutcome.SourceSelected, entry.TryAddClick(11));
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryAddClick(6));   // was rejected pre-fix
+        Assert.Equal(ClickOutcome.SourceSelected, entry.TryAddClick(6));
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAddClick(5));
+
+        Assert.True(entry.IsComplete);
+        Assert.Equal(1, entry.Current.Points[5]);
+        var allPlays = MoveGenerator.GeneratePlays(initial, 5, 1);
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+    }
+
+    [Fact]
+    public void TryAddClick_CombinedSingleChecker_BothOrderings_YieldEqualCanonicalPlay()
+    {
+        var initial = SingleCheckerOn(11);
+
+        var viaTen = new MoveEntryState(initial, 5, 1);
+        viaTen.TryAddClick(11); viaTen.TryAddClick(10);
+        viaTen.TryAddClick(10); viaTen.TryAddClick(5);
+
+        var viaSix = new MoveEntryState(initial, 5, 1);
+        viaSix.TryAddClick(11); viaSix.TryAddClick(6);
+        viaSix.TryAddClick(6); viaSix.TryAddClick(5);
+
+        Assert.True(viaTen.IsComplete);
+        Assert.True(viaSix.IsComplete);
+        // Same canonical Play regardless of the intermediate path the user took.
+        Assert.Equal(viaTen.CompletedPlay!.Value, viaSix.CompletedPlay!.Value);
+    }
+
+    [Fact]
+    public void TryAddClick_CombinedSingleChecker_FullBoard_5_1_BothOrderings()
+    {
+        // Representative full-board reconstruction of the reported 5-1 bug
+        // (the runtime position id is not checked in). A back checker on 11
+        // can play 11/5 as a combined move; both intermediates (10 and 6) are
+        // open, so GeneratePlays emits a single canonical ordering.
+        var s = new BoardState();
+        s.Points[24] = 2;
+        s.Points[13] = 4;
+        s.Points[11] = 1;
+        s.Points[8] = 3;
+        s.Points[6] = 5;
+        s.Points[19] = -5;
+        s.Points[17] = -3;
+        s.Points[12] = -5;
+        s.Points[1] = -2;
+        s.RecalcHighPoint();
+
+        var allPlays = MoveGenerator.GeneratePlays(s, 5, 1);
+
+        // Path A: 11→10→5
+        var a = new MoveEntryState(s, 5, 1);
+        a.TryAddClick(11); a.TryAddClick(10);
+        a.TryAddClick(10); a.TryAddClick(5);
+        Assert.True(a.IsComplete);
+        Assert.Contains(allPlays, p => p.Equals(a.CompletedPlay!.Value));
+
+        // Path B: 11→6→5 (the ordering GeneratePlays did not emit)
+        var b = new MoveEntryState(s, 5, 1);
+        b.TryAddClick(11);
+        Assert.Equal(ClickOutcome.MoveCommitted, b.TryAddClick(6));
+        b.TryAddClick(6);
+        Assert.Equal(ClickOutcome.PlayCompleted, b.TryAddClick(5));
+        Assert.True(b.IsComplete);
+        Assert.Contains(allPlays, p => p.Equals(b.CompletedPlay!.Value));
+
+        Assert.Equal(a.CompletedPlay!.Value, b.CompletedPlay!.Value);
+    }
+
+    // ── Hit on the second move (subsumes the B/20 20/16* deferred item) ──
+
+    private static BoardState BarEnterThenHit_5_4()
+    {
+        // Player on bar; opponent blot on 16. With dice (5,4):
+        //   bar/20 (die 5) then 20/16* (die 4)   ← non-emitted ordering
+        //   bar/21 (die 4) then 21/16* (die 5)   ← canonical (emitted) ordering
+        // Both hit the 16 blot and reach the same final state, so GeneratePlays
+        // dedups to the canonical bar/21 21/16*.
+        var s = new BoardState();
+        s.Points[25] = 1;
+        s.Points[16] = -1;
+        s.RecalcHighPoint();
+        return s;
+    }
+
+    [Fact]
+    public void TryAddClick_BarEnterThenHit_NonEmittedOrdering_bar20_20to16_Completes()
+    {
+        var initial = BarEnterThenHit_5_4();
+        var entry = new MoveEntryState(initial, 5, 4);
+
+        Assert.Equal(ClickOutcome.SourceSelected, entry.TryAddClick(25)); // bar
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryAddClick(20));  // bar/20 (die 5) — was rejected pre-fix
+        Assert.Equal(ClickOutcome.SourceSelected, entry.TryAddClick(20));
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAddClick(16));  // 20/16* hit
+
+        Assert.True(entry.IsComplete);
+        Assert.Equal(1, entry.Current.Points[16]);   // player landed on 16
+        Assert.Equal(-1, entry.Current.Points[0]);   // opponent sent to bar
+        var allPlays = MoveGenerator.GeneratePlays(initial, 5, 4);
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+    }
+
+    [Fact]
+    public void TryAddClick_BarEnterThenHit_EmittedOrdering_bar21_21to16_Completes()
+    {
+        var initial = BarEnterThenHit_5_4();
+        var entry = new MoveEntryState(initial, 5, 4);
+
+        Assert.Equal(ClickOutcome.SourceSelected, entry.TryAddClick(25)); // bar
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryAddClick(21));  // bar/21 (die 4)
+        Assert.Equal(ClickOutcome.SourceSelected, entry.TryAddClick(21));
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAddClick(16));  // 21/16* hit
+
+        Assert.True(entry.IsComplete);
+        Assert.Equal(-1, entry.Current.Points[0]);
+        var allPlays = MoveGenerator.GeneratePlays(initial, 5, 4);
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+    }
+
+    // ── Edge cases: blocked / blot intermediates, doubles permutations ──
+
+    [Fact]
+    public void TryAddClick_BlockedIntermediate_OnlyOneOrderingLegal_StillWorks()
+    {
+        // Checker on 11, dice (5,1), opponent owns 10 (≥2). The die-1-first
+        // ordering 11→10 is blocked, so only 11→6→5 is legal. GeneratePlays
+        // emits exactly that; entry must accept it and reject the blocked 10.
+        var s = new BoardState();
+        s.Points[11] = 1;
+        s.Points[10] = -2;
+        s.RecalcHighPoint();
+
+        var entry = new MoveEntryState(s, 5, 1);
+        entry.TryAddClick(11);
+        Assert.Contains(6, entry.LegalNextClicks);
+        Assert.DoesNotContain(10, entry.LegalNextClicks); // blocked
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryAddClick(6));
+        entry.TryAddClick(6);
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAddClick(5));
+
+        var allPlays = MoveGenerator.GeneratePlays(s, 5, 1);
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+    }
+
+    [Fact]
+    public void TryAddClick_BlotIntermediate_OrderingsDiffer_RemainDistinct()
+    {
+        // Checker on 11, dice (5,1), opponent BLOT on 10.
+        //   11→10*(die 1, hit) → 5 (die 5)  — sends opponent to bar
+        //   11→6 (die 5) → 5 (die 1)        — leaves the 10 blot untouched
+        // Different final states ⇒ GeneratePlays keeps BOTH as distinct plays,
+        // and the two click paths must yield distinct (non-equal) completed plays.
+        var s = new BoardState();
+        s.Points[11] = 1;
+        s.Points[10] = -1; // blot
+        s.RecalcHighPoint();
+
+        var allPlays = MoveGenerator.GeneratePlays(s, 5, 1);
+
+        var hitPath = new MoveEntryState(s, 5, 1);
+        hitPath.TryAddClick(11); hitPath.TryAddClick(10); // hit
+        hitPath.TryAddClick(10); hitPath.TryAddClick(5);
+        Assert.True(hitPath.IsComplete);
+        Assert.Equal(-1, hitPath.Current.Points[0]); // opponent on bar
+        Assert.Contains(allPlays, p => p.Equals(hitPath.CompletedPlay!.Value));
+
+        var noHitPath = new MoveEntryState(s, 5, 1);
+        noHitPath.TryAddClick(11); noHitPath.TryAddClick(6);
+        noHitPath.TryAddClick(6); noHitPath.TryAddClick(5);
+        Assert.True(noHitPath.IsComplete);
+        Assert.Equal(-1, noHitPath.Current.Points[10]); // blot survives
+        Assert.Contains(allPlays, p => p.Equals(noHitPath.CompletedPlay!.Value));
+
+        // Genuinely different outcomes — must NOT collapse to one canonical play.
+        Assert.NotEqual(hitPath.CompletedPlay!.Value, noHitPath.CompletedPlay!.Value);
+    }
+
+    [Fact]
+    public void TryAddClick_Doubles_CombinedMove_InterleavedOrdering_Completes()
+    {
+        // Two checkers on 6, dice (2,2): 6/2(2) via 6→4→2 per checker.
+        // Enter in an interleaved order (first checker all the way, then second)
+        // rather than the canonical non-increasing-FrPt order the generator emits.
+        var s = new BoardState();
+        s.Points[6] = 2;
+        s.RecalcHighPoint();
+
+        var entry = new MoveEntryState(s, 2, 2);
+        entry.TryAddClick(6); entry.TryAddClick(4); // 6→4 (checker A)
+        entry.TryAddClick(4); entry.TryAddClick(2); // 4→2 (checker A all the way)
+        entry.TryAddClick(6); entry.TryAddClick(4); // 6→4 (checker B)
+        Assert.False(entry.IsComplete);
+        entry.TryAddClick(4);
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAddClick(2)); // 4→2 (checker B)
+
+        Assert.True(entry.IsComplete);
+        Assert.Equal(2, entry.Current.Points[2]);
+        var allPlays = MoveGenerator.GeneratePlays(s, 2, 2);
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
     }
 }
