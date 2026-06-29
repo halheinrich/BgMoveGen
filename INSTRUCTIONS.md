@@ -39,9 +39,9 @@ BgMoveGen/
                            (Span and List overloads) / GenerateDoubles /
                            GenerateNonDoubles / Reference_GeneratePlays
   MoveNotationFormatter.cs — Play → standard notation ("8/5(2)", "24/18*")
-  MoveEntryState.cs      — stateful click-by-click Play assembly;
-                           ClickOutcome enum (Illegal / SourceSelected /
-                           MoveCommitted / PlayCompleted)
+  MoveEntryState.cs      — stateful one-click Play assembly;
+                           ClickOutcome enum (Illegal / MoveCommitted /
+                           PlayCompleted)
   Interop.cs             — NativeAOT exports + internal blittable
                            BgBoardState
 BgMoveGen.Tests/
@@ -277,12 +277,15 @@ time order collapse the same way.
 
 ### Managed — `MoveEntryState`
 
-Stateful click-by-click `Play` assembly (two-click source→destination).
-Anchored on `MoveGenerator.GeneratePlays` as the canonical legality
-reference, but **by reachable board state, not by literal move-lists** —
-see Architecture and Pitfalls below. Public surface: `TryAddClick(int)`
-→ `ClickOutcome`, `LegalNextClicks`, `CompletedPlay`, `Current`,
-`SelectedSource`, `IsComplete`, `AppliedMoves`, `UndoLast()`,
+Stateful one-click `Play` assembly. Anchored on
+`MoveGenerator.GeneratePlays` as the canonical legality reference, but
+**by reachable board state, not by literal move-lists** — see
+Architecture and Pitfalls below. Public surface:
+`TryAdvanceFrom(int, IReadOnlyList<int>)` (advance the clicked point by
+one legal move, the caller's `diePreference` resolving which die) and
+`TryBearOffMax()` (tray click — bear off the most checkers when a unique
+completion achieves it), both → `ClickOutcome`, plus `LegalNextClicks`,
+`CompletedPlay`, `Current`, `IsComplete`, `AppliedMoves`, `UndoLast()`,
 `UndoAll()`. Consumed by BgDiag_Razor's `BackgammonPlayEntry`.
 
 ### Native — NativeAOT exports

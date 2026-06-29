@@ -3,15 +3,13 @@ using BgDataTypes_Lib;
 namespace BgMoveGen;
 
 /// <summary>
-/// Result of a single click against <see cref="MoveEntryState.TryAddClick"/>.
+/// Result of a one-click advance against <see cref="MoveEntryState.TryAdvanceFrom"/>
+/// or <see cref="MoveEntryState.TryBearOffMax"/>.
 /// </summary>
 public enum ClickOutcome
 {
     /// <summary>Click was rejected; state unchanged.</summary>
     Illegal,
-
-    /// <summary>A source point is now picked (or an existing pick was replaced).</summary>
-    SourceSelected,
 
     /// <summary>A complete legal move was applied. More moves remain in the play.</summary>
     MoveCommitted,
@@ -25,15 +23,15 @@ public enum ClickOutcome
 /// and dice. Anchored on <see cref="MoveGenerator.GeneratePlays"/> as the canonical
 /// reference for legality.
 ///
-/// Click semantics: alternating source / destination ("two-click"). Each call to
-/// <see cref="TryAddClick"/> either picks a source point or attempts to commit a move
-/// from the previously picked source. Clicking a different legal source while one is
-/// already selected replaces the selection.
+/// Click semantics: one-click. <see cref="TryAdvanceFrom"/> advances the checker on a
+/// clicked point by one legal move (the caller's <c>diePreference</c> resolves which
+/// die when both could play); <see cref="TryBearOffMax"/> handles a tray click by
+/// bearing off the maximum number of checkers when a unique completion achieves it.
 ///
-/// Click point conventions match BgDiag_Razor's existing event surface:
+/// Click point conventions match BgDiag_Razor's event surface:
 ///   • 1..24  — regular board points
-///   • 25     — player bar (legal source if player has a bar checker)
-///   • 0      — bear-off tray (legal destination only)
+///   • 25     — player bar (advancing it = entering)
+///   • 0      — bear-off tray (handled by <see cref="TryBearOffMax"/>)
 ///
 /// <see cref="Move.ToPt"/>'s sign encoding (negative = hit, zero = bear off,
 /// positive = regular) is hidden from consumers — clicks use positive point indices.
@@ -77,7 +75,6 @@ public sealed class MoveEntryState
     private readonly List<int> _appliedDice = new(4);
     /// <summary>Dice not yet consumed by an applied move.</summary>
     private readonly List<int> _remainingDice = new(4);
-    private int? _selectedSource;
     private HashSet<int> _legalNextClicks = [];
     private Play? _completedPlay;
 
@@ -118,13 +115,9 @@ public sealed class MoveEntryState
     /// </summary>
     public BoardState Current => _currentState;
 
-    /// <summary>The currently selected source point, or null if awaiting a source click.</summary>
-    public int? SelectedSource => _selectedSource;
-
     /// <summary>
-    /// Points the user can usefully click next. When <see cref="SelectedSource"/> is
-    /// null, this is the set of legal source points; when a source is selected, it
-    /// is the set of legal destination points (with 0 representing bear-off).
+    /// Points the user can usefully click next: the set of points that have a legal
+    /// advancing move now (the valid arguments to <see cref="TryAdvanceFrom"/>).
     /// </summary>
     public IReadOnlyCollection<int> LegalNextClicks => _legalNextClicks;
 
@@ -138,42 +131,6 @@ public sealed class MoveEntryState
     public IReadOnlyList<Move> AppliedMoves => _appliedMoves;
 
     // ── Click handling ────────────────────────────────────────────
-
-    public ClickOutcome TryAddClick(int point)
-    {
-        if (IsComplete) return ClickOutcome.Illegal;
-
-        var legalMoves = ComputeLegalNextSingleMoves();
-
-        if (_selectedSource is int s)
-        {
-            // Awaiting destination: try to interpret `point` as a destination from s.
-            foreach (var (m, die) in legalMoves)
-            {
-                if (m.FrPt != s) continue;
-                int destClick = DestClickPoint(m);
-                if (destClick == point)
-                {
-                    CommitMove(m, die);
-                    return IsComplete ? ClickOutcome.PlayCompleted : ClickOutcome.MoveCommitted;
-                }
-            }
-            // Not a legal destination — fall through to source-replacement check.
-        }
-
-        // Awaiting source (or replacing selection): is `point` a legal source for any next move?
-        foreach (var (m, _) in legalMoves)
-        {
-            if (m.FrPt == point)
-            {
-                _selectedSource = point;
-                RecomputeLegalNextClicks();
-                return ClickOutcome.SourceSelected;
-            }
-        }
-
-        return ClickOutcome.Illegal;
-    }
 
     /// <summary>
     /// One-click source-advance: commit the single legal move that advances the
@@ -361,19 +318,10 @@ public sealed class MoveEntryState
     }
 
     /// <summary>
-    /// Roll back the most recent change. If a source is selected but no move is
-    /// pending commit, clears the selection. Otherwise undoes the last committed
-    /// move. No-op if neither holds.
+    /// Undo the last committed move. No-op if none have been applied.
     /// </summary>
     public void UndoLast()
     {
-        if (_selectedSource is not null)
-        {
-            _selectedSource = null;
-            RecomputeLegalNextClicks();
-            return;
-        }
-
         if (_appliedMoves.Count == 0) return;
 
         var last = _appliedMoves[^1];
@@ -388,7 +336,6 @@ public sealed class MoveEntryState
 
     /// <summary>
     /// Restore the initial state regardless of how many moves have been applied.
-    /// Clears any source selection.
     /// </summary>
     public void UndoAll()
     {
@@ -398,7 +345,6 @@ public sealed class MoveEntryState
         _appliedDice.Clear();
         _remainingDice.Clear();
         _remainingDice.AddRange(_turnDice);
-        _selectedSource = null;
         _completedPlay = IsComplete ? CanonicalCompletedPlay() : null;
         RecomputeLegalNextClicks();
     }
@@ -411,7 +357,6 @@ public sealed class MoveEntryState
         _appliedMoves.Add(m);
         _appliedDice.Add(die);
         _remainingDice.Remove(die);
-        _selectedSource = null;
         if (IsComplete) _completedPlay = CanonicalCompletedPlay();
         RecomputeLegalNextClicks();
     }
@@ -421,16 +366,7 @@ public sealed class MoveEntryState
         var clicks = new HashSet<int>();
         if (!IsComplete)
         {
-            var legalMoves = ComputeLegalNextSingleMoves();
-            if (_selectedSource is int s)
-            {
-                foreach (var (m, _) in legalMoves)
-                    if (m.FrPt == s) clicks.Add(DestClickPoint(m));
-            }
-            else
-            {
-                foreach (var (m, _) in legalMoves) clicks.Add(m.FrPt);
-            }
+            foreach (var (m, _) in ComputeLegalNextSingleMoves()) clicks.Add(m.FrPt);
         }
         _legalNextClicks = clicks;
     }
@@ -509,9 +445,6 @@ public sealed class MoveEntryState
         }
         return false;
     }
-
-    private static int DestClickPoint(Move m) =>
-        m.ToPt > 0 ? m.ToPt : (m.ToPt < 0 ? -m.ToPt : 0);
 
     /// <summary>
     /// Index each generated play by the signature of the board state it produces.
