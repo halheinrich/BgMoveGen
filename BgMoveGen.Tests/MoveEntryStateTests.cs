@@ -800,4 +800,153 @@ public class MoveEntryStateTests
         var allPlays = MoveGenerator.GeneratePlays(s, 2, 2);
         Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
     }
+
+    // ── One-click source-advance (TryAdvanceFrom) ─────────────────
+    //
+    // diePreference is an ordered list of dice to prefer. The model stays
+    // die-order-agnostic: "leftmost die else right" is just [left, right], and
+    // "use the other die once one is played" falls out because the candidate set
+    // already contains only remaining-die moves.
+
+    [Fact]
+    public void TryAdvanceFrom_UsesPreferredDie_WhenLegalFromPoint()
+    {
+        // Standard (3,1): from 8 both dice play — 8/5 (die 3) and 8/7 (die 1).
+        // Prefer die 3 first ⇒ commits 8/5.
+        var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
+
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryAdvanceFrom(8, new[] { 3, 1 }));
+        Assert.Single(entry.AppliedMoves);
+        Assert.Equal(8, entry.AppliedMoves[0].FrPt);
+        Assert.Equal(5, entry.AppliedMoves[0].ToPt); // die 3
+        Assert.Equal(2, entry.Current.Points[8]);
+        Assert.Equal(1, entry.Current.Points[5]);
+    }
+
+    [Fact]
+    public void TryAdvanceFrom_OtherPreferenceOrder_PicksOtherDie()
+    {
+        // Same point, reversed preference ⇒ commits 8/7 (die 1) instead.
+        var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
+
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryAdvanceFrom(8, new[] { 1, 3 }));
+        Assert.Equal(8, entry.AppliedMoves[0].FrPt);
+        Assert.Equal(7, entry.AppliedMoves[0].ToPt); // die 1
+    }
+
+    [Fact]
+    public void TryAdvanceFrom_FallsBackToOtherDie_WhenPreferredHasNoMoveFromPoint()
+    {
+        // Highest home point = 6; checkers on 6/3/1, dice (5,1). From point 3 only
+        // die 1 advances (3/2). Die 5 cannot: it overshoots 3 but bear-off with the
+        // big die is legal only from the highest point (6, occupied), and 3/-2 is
+        // off the board. Prefer die 5 first ⇒ fall back to die 1.
+        var s = BearOffPosition_HighSixWithGap();
+        var entry = new MoveEntryState(s, 5, 1);
+
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryAdvanceFrom(3, new[] { 5, 1 }));
+        Assert.Equal(3, entry.AppliedMoves[0].FrPt);
+        Assert.Equal(2, entry.AppliedMoves[0].ToPt); // die 1, despite preferring 5
+        Assert.Equal(4, entry.Current.Points[3]);    // 5 - 1
+    }
+
+    [Fact]
+    public void TryAdvanceFrom_AfterOneDiePlayed_UsesRemainingDie_RegardlessOfPreference()
+    {
+        // Commit 8/5 (die 3) the two-click way; die 1 is all that remains.
+        // Advancing from 6 must use die 1 (6/5) even though we prefer die 3.
+        var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
+        entry.TryAddClick(8); entry.TryAddClick(5); // consumes die 3
+
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAdvanceFrom(6, new[] { 3, 1 }));
+        Assert.Equal(6, entry.AppliedMoves[1].FrPt);
+        Assert.Equal(5, entry.AppliedMoves[1].ToPt); // die 1, the only one left
+        Assert.True(entry.IsComplete);
+    }
+
+    [Fact]
+    public void TryAdvanceFrom_Doubles_AdvancesIrrespectiveOfPreference()
+    {
+        // (6,6) standard opener: from 24, die 6 plays 24/18. Preference order is
+        // moot under doubles — an empty preference still advances.
+        var initial = BoardState.Standard();
+        var entry = new MoveEntryState(initial, 6, 6);
+
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryAdvanceFrom(24, Array.Empty<int>()));
+        Assert.Equal(24, entry.AppliedMoves[0].FrPt);
+        Assert.Equal(18, entry.AppliedMoves[0].ToPt);
+    }
+
+    [Fact]
+    public void TryAdvanceFrom_SequenceCompletesPlay_MatchesCanonicalGeneratedPlay()
+    {
+        // Drive a full (3,1) play with one-click advances: 8/5 then 6/5.
+        var initial = BoardState.Standard();
+        var entry = new MoveEntryState(initial, 3, 1);
+
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryAdvanceFrom(8, new[] { 3, 1 }));
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAdvanceFrom(6, new[] { 3, 1 }));
+
+        Assert.True(entry.IsComplete);
+        var allPlays = MoveGenerator.GeneratePlays(initial, 3, 1);
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+    }
+
+    [Fact]
+    public void TryAdvanceFrom_BarEntry_AdvancesTheBarChecker()
+    {
+        var s = new BoardState();
+        s.Points[25] = 1;
+        s.Points[6] = 5; s.Points[8] = 3; s.Points[13] = 5; s.Points[24] = 1;
+        s.Points[19] = -5; s.Points[17] = -3; s.Points[12] = -5; s.Points[1] = -2;
+        s.RecalcHighPoint();
+
+        var entry = new MoveEntryState(s, 3, 1);
+        // Bar entries: 22 (die 3) and 24 (die 1). Prefer die 3 ⇒ enter on 22.
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryAdvanceFrom(25, new[] { 3, 1 }));
+        Assert.Equal(0, entry.Current.Points[25]);
+        Assert.Equal(1, entry.Current.Points[22]);
+    }
+
+    [Fact]
+    public void TryAdvanceFrom_BearOff_AdvancingHomeCheckerBearsItOff()
+    {
+        var s = BearOffPosition_HighFour();
+        var entry = new MoveEntryState(s, 4, 1);
+
+        // From 4, die 4 bears off (ToPt 0); die 1 → 4/3. Prefer die 4 ⇒ bear off.
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryAdvanceFrom(4, new[] { 4, 1 }));
+        Assert.Equal(0, entry.AppliedMoves[0].ToPt); // bore off
+        Assert.Equal(4, entry.Current.Points[4]);    // 5 - 1
+    }
+
+    [Fact]
+    public void TryAdvanceFrom_PointWithNoLegalMove_ReturnsIllegal_NoStateChange()
+    {
+        var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
+
+        // 10 is empty — no own checker, no advancing move.
+        Assert.Equal(ClickOutcome.Illegal, entry.TryAdvanceFrom(10, new[] { 3, 1 }));
+        Assert.Empty(entry.AppliedMoves);
+        Assert.Null(entry.SelectedSource);
+        Assert.Equal(0, entry.Current.Points[10]);
+    }
+
+    [Fact]
+    public void TryAdvanceFrom_AfterComplete_ReturnsIllegal()
+    {
+        var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
+        entry.TryAddClick(8); entry.TryAddClick(5);
+        entry.TryAddClick(6); entry.TryAddClick(5);
+        Assert.True(entry.IsComplete);
+
+        Assert.Equal(ClickOutcome.Illegal, entry.TryAdvanceFrom(13, new[] { 3, 1 }));
+    }
+
+    [Fact]
+    public void TryAdvanceFrom_NullPreference_Throws()
+    {
+        var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
+        Assert.Throws<ArgumentNullException>(() => entry.TryAdvanceFrom(8, null!));
+    }
 }

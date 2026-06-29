@@ -176,6 +176,71 @@ public sealed class MoveEntryState
     }
 
     /// <summary>
+    /// One-click source-advance: commit the single legal move that advances the
+    /// checker on <paramref name="point"/>, choosing which die to consume by
+    /// <paramref name="diePreference"/>.
+    ///
+    /// Among the legal next single moves whose <see cref="Move.FrPt"/> is
+    /// <paramref name="point"/> (as offered by <see cref="ComputeLegalNextSingleMoves"/>
+    /// — already filtered to legal, target-reachable, remaining-die-only), the one
+    /// whose consumed die ranks earliest in <paramref name="diePreference"/> is
+    /// committed. A die not present in <paramref name="diePreference"/> ranks last.
+    /// Returns <see cref="ClickOutcome.PlayCompleted"/> if the commit finishes the
+    /// play, otherwise <see cref="ClickOutcome.MoveCommitted"/>;
+    /// <see cref="ClickOutcome.Illegal"/> (no state change) if
+    /// <paramref name="point"/> has no legal advancing move now or the play is
+    /// already complete.
+    ///
+    /// Legality is <i>not</i> re-derived here: candidates come solely from
+    /// <see cref="ComputeLegalNextSingleMoves"/>, the single source of truth for
+    /// "what can move next", and the commit goes through <see cref="CommitMove"/>
+    /// so all bookkeeping stays single-sourced. The model stays die-order-agnostic
+    /// — the caller decides which dice to prefer, in order. From a given point a
+    /// die yields at most one legal single move, so the only disambiguation is
+    /// which die, exactly what <paramref name="diePreference"/> resolves. Bar
+    /// advance (<paramref name="point"/> == 25, i.e. entering) and bear-off (a home
+    /// point whose advancing move has <see cref="Move.ToPt"/> == 0) need no
+    /// special-casing — they are ordinary candidates.
+    /// </summary>
+    public ClickOutcome TryAdvanceFrom(int point, IReadOnlyList<int> diePreference)
+    {
+        ArgumentNullException.ThrowIfNull(diePreference);
+        if (IsComplete) return ClickOutcome.Illegal;
+
+        Move best = default;
+        int bestDie = 0;
+        int bestRank = int.MaxValue;
+        bool found = false;
+
+        foreach (var (m, die) in ComputeLegalNextSingleMoves())
+        {
+            if (m.FrPt != point) continue;
+            int rank = DieRank(diePreference, die);
+            if (!found || rank < bestRank)
+            {
+                best = m;
+                bestDie = die;
+                bestRank = rank;
+                found = true;
+            }
+        }
+
+        if (!found) return ClickOutcome.Illegal;
+
+        CommitMove(best, bestDie);
+        return IsComplete ? ClickOutcome.PlayCompleted : ClickOutcome.MoveCommitted;
+    }
+
+    /// <summary>Rank of <paramref name="die"/> in <paramref name="preference"/>
+    /// (earliest = lowest); a die absent from the preference ranks last.</summary>
+    private static int DieRank(IReadOnlyList<int> preference, int die)
+    {
+        for (int i = 0; i < preference.Count; i++)
+            if (preference[i] == die) return i;
+        return int.MaxValue;
+    }
+
+    /// <summary>
     /// Roll back the most recent change. If a source is selected but no move is
     /// pending commit, clears the selection. Otherwise undoes the last committed
     /// move. No-op if neither holds.
