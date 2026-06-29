@@ -1076,4 +1076,55 @@ public class MoveEntryStateTests
         Assert.True(entry.IsComplete);
         Assert.Equal(ClickOutcome.Illegal, entry.TryBearOffMax());
     }
+
+    private static int BearOffCount(Play play)
+    {
+        int n = 0;
+        for (int i = 0; i < play.Count; i++)
+            if (play[i].ToPt == 0) n++;
+        return n;
+    }
+
+    [Fact]
+    public void TryBearOffMax_OutlierComesHomeThenBearsOff_BearsOff()
+    {
+        // Outlier on the 8-pt plus a home checker on 1, dice (6,2). The outlier must
+        // come home with one die and bear off with the other: 8/6 (die 2) 6/0 (die 6),
+        // or equivalently 8/2 (die 6) 2/0 (die 2) — both reach the same final {1:1},
+        // so the completion is unique and bears off exactly the one outlier. The home
+        // checker on 1 cannot also bear off (it is never the highest while a die is
+        // left), so the maximum is 1 and the tray commits it.
+        var initial = TwoCheckers(8, 1);
+        var entry = new MoveEntryState(initial, 6, 2);
+
+        Assert.Equal(2, OwnOnBoard(entry.Current)); // before
+
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryBearOffMax());
+        Assert.True(entry.IsComplete);
+        Assert.Equal(1, OwnOnBoard(entry.Current)); // dropped by 1 — outlier borne off
+
+        Assert.Equal(1, BearOffCount(entry.CompletedPlay!.Value)); // exactly one ToPt == 0
+        var allPlays = MoveGenerator.GeneratePlays(initial, 6, 2);
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+    }
+
+    [Fact]
+    public void TryBearOffMax_OutlierComesHomeButDiceCantAlsoBearOff_ReturnsIllegal()
+    {
+        // Same shape of "outlier comes home", but dice (2,1) cannot bring-home-AND-
+        // bear-off: 8/6 (die 2) lands the outlier on the edge, and die 1 only shuffles
+        // (6/5) — no checker bears off, so the maximum is 0. Documents that the no-op
+        // is dice-driven, not "the outlier blocks bear-off".
+        var s = TwoCheckers(8, 6);
+        var entry = new MoveEntryState(s, 2, 1);
+
+        Assert.False(entry.IsComplete);
+        var before = entry.Current.ToMop();
+
+        Assert.Equal(ClickOutcome.Illegal, entry.TryBearOffMax());
+
+        Assert.Empty(entry.AppliedMoves);
+        Assert.False(entry.IsComplete);
+        Assert.Equal(before, entry.Current.ToMop());
+    }
 }
