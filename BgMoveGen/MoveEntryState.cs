@@ -241,6 +241,126 @@ public sealed class MoveEntryState
     }
 
     /// <summary>
+    /// Tray-click bear-off-max: complete the turn by bearing off the <i>maximum</i>
+    /// number of checkers, but only when that maximum is achieved by a <b>unique</b>
+    /// reachable completion.
+    ///
+    /// From the current entry state (honouring moves already applied and the dice
+    /// still to play), the reachable complete plays are enumerated. Because every
+    /// legal turn must use the maximum dice, "bear off the most" is measured over
+    /// <i>complete</i> plays — there is no legal "bear off some and stop". A
+    /// completion's bear-off count equals own checkers removed reaching its final
+    /// state; equivalently, the reachable final state with the <i>fewest</i> own
+    /// checkers left on board bears off the most. If exactly one reachable
+    /// completion attains that minimum-on-board (and it bears off at least one
+    /// checker), its moves are committed and the turn completes →
+    /// <see cref="ClickOutcome.PlayCompleted"/>. Otherwise — a tie for the maximum
+    /// (ambiguous; the user bears off via individual checker clicks), no checker
+    /// can bear off, or the play is already complete — returns
+    /// <see cref="ClickOutcome.Illegal"/> with no state change.
+    ///
+    /// Reuses the existing target machinery — <see cref="_targetBySignature"/> (the
+    /// generated final states) and the same depth-first reachability search as
+    /// <see cref="CanReachTarget"/> — to enumerate completions and recover a
+    /// committable path. Play generation and legality are not re-implemented; the
+    /// generator remains the single source of truth. Each step is applied through
+    /// the existing <see cref="CommitMove"/>, so completion fires normally, the
+    /// moves remain undo-able via <see cref="UndoLast"/> / <see cref="UndoAll"/>,
+    /// and nothing auto-submits — the user still clicks Submit.
+    /// </summary>
+    public ClickOutcome TryBearOffMax()
+    {
+        if (IsComplete) return ClickOutcome.Illegal;
+
+        // Enumerate reachable completions on scratch copies — _currentState and
+        // _remainingDice are left untouched until we decide to commit.
+        var work = _currentState.Copy();
+        var remaining = new List<int>(_remainingDice);
+        var completions = new Dictionary<long, (int onBoard, List<(Move move, int die)> path)>();
+        CollectReachableCompletions(work, remaining, new List<(Move, int)>(), completions);
+
+        if (completions.Count == 0) return ClickOutcome.Illegal; // no reachable completion
+
+        int minOnBoard = int.MaxValue;
+        foreach (var c in completions.Values)
+            if (c.onBoard < minOnBoard) minOnBoard = c.onBoard;
+
+        // Max bear-off = own checkers removed reaching the fewest-on-board final.
+        if (OwnCheckersOnBoard(_currentState) - minOnBoard < 1) return ClickOutcome.Illegal;
+
+        long winner = 0;
+        bool haveWinner = false;
+        foreach (var kv in completions)
+        {
+            if (kv.Value.onBoard != minOnBoard) continue;
+            if (haveWinner) return ClickOutcome.Illegal; // tie at the maximum → ambiguous
+            winner = kv.Key;
+            haveWinner = true;
+        }
+
+        foreach (var (m, d) in completions[winner].path)
+            CommitMove(m, d);
+
+        return ClickOutcome.PlayCompleted; // path lands on a generated final state ⇒ IsComplete
+    }
+
+    /// <summary>
+    /// Depth-first walk of every ordering of <paramref name="remaining"/> dice played
+    /// as legal single moves from <paramref name="state"/>. Each ordering that consumes
+    /// all dice and lands on a generated final state records — keyed by that state's
+    /// signature, first path wins — the own checkers left on board and a committable
+    /// (move, die) path. Mutates <paramref name="state"/> / <paramref name="remaining"/>
+    /// / <paramref name="path"/> transiently but restores all three before returning.
+    /// </summary>
+    private void CollectReachableCompletions(
+        BoardState state, List<int> remaining,
+        List<(Move move, int die)> path,
+        Dictionary<long, (int onBoard, List<(Move move, int die)> path)> into)
+    {
+        if (remaining.Count == 0)
+        {
+            long sig = Signature(state);
+            if (_targetBySignature.ContainsKey(sig) && !into.ContainsKey(sig))
+                into[sig] = (OwnCheckersOnBoard(state), new List<(Move, int)>(path));
+            return;
+        }
+
+        var tried = new HashSet<int>();
+        Span<Move> buffer = stackalloc Move[30];
+
+        for (int idx = 0; idx < remaining.Count; idx++)
+        {
+            int d = remaining[idx];
+            if (!tried.Add(d)) continue;
+
+            remaining.RemoveAt(idx);
+            int count = MoveGenerator.SingleMoves(state, d, buffer);
+            for (int i = 0; i < count; i++)
+            {
+                var m = buffer[i];
+                state.ApplyMove(m);
+                path.Add((m, d));
+                CollectReachableCompletions(state, remaining, path, into);
+                path.RemoveAt(path.Count - 1);
+                state.UndoMove(m);
+            }
+            remaining.Insert(idx, d);
+        }
+    }
+
+    /// <summary>On-roll checkers still in play: own (positive) checkers on the
+    /// playing surface and the on-roll bar (points 1..25). Decreases by one per
+    /// bear-off and by nothing else (own checkers are never hit), so the reachable
+    /// final state minimizing this maximizes checkers borne off this turn.</summary>
+    private static int OwnCheckersOnBoard(BoardState s)
+    {
+        int total = 0;
+        for (int i = 1; i <= 25; i++)
+            if (s.Points[i] > 0) total += s.Points[i];
+        return total;
+    }
+
+    /// <summary>
     /// Roll back the most recent change. If a source is selected but no move is
     /// pending commit, clears the selection. Otherwise undoes the last committed
     /// move. No-op if neither holds.

@@ -949,4 +949,131 @@ public class MoveEntryStateTests
         var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
         Assert.Throws<ArgumentNullException>(() => entry.TryAdvanceFrom(8, null!));
     }
+
+    // ── Tray-click bear-off-max (TryBearOffMax) ───────────────────
+    //
+    // The tray bears off the MAXIMUM number of checkers iff a unique reachable
+    // complete play achieves that maximum (and it bears off ≥ 1). Ties for the
+    // max, and positions where nothing can bear off, are no-ops.
+
+    private static int OwnOnBoard(BoardState s)
+    {
+        int total = 0;
+        for (int i = 1; i <= 25; i++)
+            if (s.Points[i] > 0) total += s.Points[i];
+        return total;
+    }
+
+    private static BoardState TwoCheckers(int a, int b)
+    {
+        var s = new BoardState();
+        s.Points[a]++;
+        s.Points[b]++;
+        s.RecalcHighPoint();
+        return s;
+    }
+
+    [Fact]
+    public void TryBearOffMax_UniqueMax_CommitsIt_CompletesWithMaxBorneOff()
+    {
+        // Checkers on 2 and 1, dice (2,1). Bearing off both (2/0 + 1/0) clears the
+        // board — 2 off. The rival completion 2/1 then 1/0(overshoot) bears off only
+        // 1, so the max (2) is unique. Tray must commit the clear-the-board play.
+        var initial = TwoCheckers(2, 1);
+        var entry = new MoveEntryState(initial, 2, 1);
+
+        Assert.Equal(2, OwnOnBoard(entry.Current)); // before
+
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryBearOffMax());
+        Assert.True(entry.IsComplete);
+        Assert.Equal(0, OwnOnBoard(entry.Current)); // both borne off → max = 2
+
+        var allPlays = MoveGenerator.GeneratePlays(initial, 2, 1);
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+    }
+
+    [Fact]
+    public void TryBearOffMax_TieForMax_ReturnsIllegal_NoStateChange()
+    {
+        // Checkers on 6, 3, 2 with dice (6,1). die6 bears off the 6 (exact); die1
+        // cannot bear off (point 1 empty, 6 isn't reachable-off by a 1). So every
+        // completion bears off exactly one checker, but the die-1 move (3/2 vs 2/1)
+        // leaves two DIFFERENT boards — a tie for the maximum ⇒ ambiguous ⇒ no-op.
+        var s = new BoardState();
+        s.Points[6] = 1; s.Points[3] = 1; s.Points[2] = 1;
+        s.RecalcHighPoint();
+        var entry = new MoveEntryState(s, 6, 1);
+
+        var before = entry.Current.ToMop();
+        Assert.Equal(ClickOutcome.Illegal, entry.TryBearOffMax());
+
+        Assert.Empty(entry.AppliedMoves);
+        Assert.False(entry.IsComplete);
+        Assert.Null(entry.SelectedSource);
+        Assert.Equal(before, entry.Current.ToMop());
+    }
+
+    [Fact]
+    public void TryBearOffMax_NoBearOffPossible_ReturnsIllegal_NoStateChange()
+    {
+        // Standard (3,1) opener: nothing is anywhere near bearing off.
+        var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
+
+        var before = entry.Current.ToMop();
+        Assert.Equal(ClickOutcome.Illegal, entry.TryBearOffMax());
+
+        Assert.Empty(entry.AppliedMoves);
+        Assert.False(entry.IsComplete);
+        Assert.Equal(before, entry.Current.ToMop());
+    }
+
+    [Fact]
+    public void TryBearOffMax_PartialState_BearsOffUniqueRemainder_Completes()
+    {
+        // Checkers on 6 and 1, dice (6,1). Manually bear off the 6 (two-click),
+        // leaving die 1 and the checker on 1. The tray then bears off the unique
+        // remainder (1/0) and completes.
+        var initial = TwoCheckers(6, 1);
+        var entry = new MoveEntryState(initial, 6, 1);
+
+        entry.TryAddClick(6); entry.TryAddClick(0); // manual 6/0 (die 6)
+        Assert.Single(entry.AppliedMoves);
+        Assert.Equal(1, OwnOnBoard(entry.Current)); // only the 1-checker remains
+
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryBearOffMax());
+        Assert.True(entry.IsComplete);
+        Assert.Equal(0, OwnOnBoard(entry.Current));
+
+        var allPlays = MoveGenerator.GeneratePlays(initial, 6, 1);
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+    }
+
+    [Fact]
+    public void TryBearOffMax_Doubles_BearsOffMultiple_WhenUnique()
+    {
+        // Checker on 4 and two on 2, dice (2,2). The four 2s exactly clear the board
+        // (4→2→0 consumes two, each 2-checker one), so the only completion bears off
+        // all three. Unique max ⇒ tray clears the board.
+        var s = new BoardState();
+        s.Points[4] = 1; s.Points[2] = 2;
+        s.RecalcHighPoint();
+        var entry = new MoveEntryState(s, 2, 2);
+
+        Assert.Equal(3, OwnOnBoard(entry.Current));
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryBearOffMax());
+        Assert.True(entry.IsComplete);
+        Assert.Equal(0, OwnOnBoard(entry.Current)); // 3 borne off
+
+        var allPlays = MoveGenerator.GeneratePlays(s, 2, 2);
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+    }
+
+    [Fact]
+    public void TryBearOffMax_AlreadyComplete_ReturnsIllegal()
+    {
+        // Pass position: complete at construction with the empty play.
+        var entry = new MoveEntryState(ClosedOutOnBar(), 3, 1);
+        Assert.True(entry.IsComplete);
+        Assert.Equal(ClickOutcome.Illegal, entry.TryBearOffMax());
+    }
 }
