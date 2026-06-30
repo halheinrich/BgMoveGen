@@ -283,6 +283,64 @@ public class MoveNotationFormatterTests
         Assert.Equal("24/15 13/8", result);
     }
 
+    // Chain-to-chain merge (out-of-order legs leave two chains adjacent) --------
+
+    [Fact]
+    public void Format_OutOfOrderLegs_MergesTwoExistingChains()
+    {
+        // The match_40930593.xg case. A doubles checker runs 13→11→9→7 plus a
+        // separate 8→6, with legs emitted non-canonically: (13,11)(9,7)(11,9)(8,6).
+        // (11,9) extends 13/11 forward to 13/9, leaving 13/9 and 9/7 adjacent at 9.
+        // Matching a leg against a chain never rejoins two chains, so without the
+        // fixpoint merge this rendered "13/9 9/7 8/6". It must collapse to 13/7.
+        var result = MoveNotationFormatter.Format(MakePlay(
+            new Move(13, 11), new Move(9, 7), new Move(11, 9), new Move(8, 6)));
+        Assert.Equal("13/7 8/6", result);
+    }
+
+    [Theory]
+    // Forward in order.
+    [InlineData(13, 11, 11, 9, 9, 7)]
+    // Backward (starts last): the 13→11 leg arrives after its continuations.
+    [InlineData(11, 9, 9, 7, 13, 11)]
+    // Middle leg last: the two ends arrive first, then the connector.
+    [InlineData(13, 11, 9, 7, 11, 9)]
+    // Fully reversed.
+    [InlineData(9, 7, 11, 9, 13, 11)]
+    public void Format_SingleCheckerChain_AnyLegOrder_RendersSameCollapse(
+        int f0, int t0, int f1, int t1, int f2, int t2)
+    {
+        // Every permutation of the 13→11→9→7 legs must render "13/7" — order
+        // independence across forward match, backward match, and chain merge.
+        var result = MoveNotationFormatter.Format(MakePlay(
+            new Move(f0, t0), new Move(f1, t1), new Move(f2, t2)));
+        Assert.Equal("13/7", result);
+    }
+
+    [Fact]
+    public void Format_ChainMerge_HitAtJoinPoint_StaysSplit()
+    {
+        // Same adjacency, but the leg into the join point 9 is a hit: the notional
+        // chain is 13→11→9*→7, so the "*" at the intermediate 9 must stay visible.
+        // Legs (13,11)(9,7)(11,-9): (11,-9) forward-extends 13/11 to 13/9*, which is
+        // adjacent to 9/7 — but the left segment hits at the join, so it must NOT
+        // merge. Sorted from-pt desc: 13 > 9.
+        var result = MoveNotationFormatter.Format(MakePlay(
+            new Move(13, 11), new Move(9, 7), new Move(11, -9)));
+        Assert.Equal("13/9* 9/7", result);
+    }
+
+    [Fact]
+    public void Format_ChainMerge_HitAtChainEndpoint_MergesAndKeepsAsterisk()
+    {
+        // The hit is at the FINAL point (7), not the join (9): chain 13→11→9 is
+        // hit-free at the join and fuses with 9→7*, the "*" landing on the endpoint.
+        // Legs (13,11)(9,-7)(11,9) → 13/7*.
+        var result = MoveNotationFormatter.Format(MakePlay(
+            new Move(13, 11), new Move(9, -7), new Move(11, 9)));
+        Assert.Equal("13/7*", result);
+    }
+
     // Edge cases -----------------------------------------------------------
 
     [Fact]
