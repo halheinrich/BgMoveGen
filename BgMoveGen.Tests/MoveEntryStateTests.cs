@@ -904,4 +904,207 @@ public class MoveEntryStateTests
         Assert.False(entry.IsComplete);
         Assert.Equal(before, entry.Current.ToMop());
     }
+
+    // ── One-click make-the-point (TryMakePoint) ───────────────────
+    //
+    // Click a DESTINATION point to land two own checkers on it. Make (fewest
+    // sub-moves) is attempted before the move-one fallback. Own-occupied points are
+    // advance sources, never make destinations, so they are rejected up front.
+
+    [Fact]
+    public void TryMakePoint_NonDoubles_MakesPoint_FromBothDice_Completes()
+    {
+        // Standard (3,1), click the empty 5-point: 8/5 (die 3) + 6/5 (die 1). Both
+        // dice consumed ⇒ the play completes. Make is unique (5 is reachable in one
+        // die only from 8-via-3 and 6-via-1).
+        var initial = BoardState.Standard();
+        var entry = new MoveEntryState(initial, 3, 1);
+
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(5, new[] { 3, 1 }));
+        Assert.True(entry.IsComplete);
+        Assert.Equal(2, entry.Current.Points[5]); // point made
+        Assert.Equal(2, entry.Current.Points[8]); // 3 - 1
+        Assert.Equal(4, entry.Current.Points[6]); // 5 - 1
+
+        var allPlays = MoveGenerator.GeneratePlays(initial, 3, 1);
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        // Dedup-key identifies the same canonical play regardless of click path.
+        Assert.Contains(allPlays,
+            p => p.DeduplicationKey() == entry.CompletedPlay!.Value.DeduplicationKey());
+    }
+
+    [Fact]
+    public void TryMakePoint_HitAndCover_OverOpponentBlot_Completes()
+    {
+        // Own on 8 and 6, opponent blot on 5, dice (3,1). 8/5* hits and 6/5 covers;
+        // the make lands the point over the blot, sending the opponent to the bar.
+        var s = new BoardState();
+        s.Points[8] = 1;
+        s.Points[6] = 1;
+        s.Points[5] = -1; // opponent blot
+        s.RecalcHighPoint();
+        var entry = new MoveEntryState(s, 3, 1);
+
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(5, new[] { 3, 1 }));
+        Assert.True(entry.IsComplete);
+        Assert.Equal(2, entry.Current.Points[5]);  // two own checkers cover the point
+        Assert.Equal(-1, entry.Current.Points[0]); // opponent sent to the bar
+
+        // The arrival onto the blot is generated as a hit (negative ToPt) — the sign
+        // encoding stays internal; the click was the positive point 5.
+        Assert.Contains(entry.AppliedMoves, m => m.ToPt == -5);
+
+        var allPlays = MoveGenerator.GeneratePlays(s, 3, 1);
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+    }
+
+    [Fact]
+    public void TryMakePoint_Doubles_TwoSubMoveMake_LeavesTwoDice_ThenCompletes()
+    {
+        // Two back checkers on 24, dice (4,4). Making the 20-point is the minimal
+        // (two-sub-move) placement 24/20 24/20, leaving two 4s for the user.
+        var s = new BoardState();
+        s.Points[24] = 2;
+        s.RecalcHighPoint();
+        var entry = new MoveEntryState(s, 4, 4);
+
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryMakePoint(20, new[] { 4 }));
+        Assert.False(entry.IsComplete);
+        Assert.Equal(2, entry.AppliedMoves.Count); // exactly two sub-moves
+        Assert.Equal(2, entry.Current.Points[20]); // point made
+        Assert.Equal(0, entry.Current.Points[24]); // both back checkers advanced
+
+        // Two 4s remain — the play then completes via one-click advances.
+        entry.TryAdvanceFrom(20, new[] { 4 }); // 20/16
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAdvanceFrom(20, new[] { 4 })); // 20/16
+        Assert.True(entry.IsComplete);
+
+        var allPlays = MoveGenerator.GeneratePlays(s, 4, 4);
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+    }
+
+    [Fact]
+    public void TryMakePoint_Doubles_ThreeSubMoveMake_LeavesOneDie()
+    {
+        // Own on 12 (= P+d) and 14 (= P+2d), dice (2,2), make the 10-point. No
+        // two-sub-move make exists (only one checker is one die from 10), so the
+        // minimal make is three sub-moves: 12/10 plus 14/12/10. One die left over.
+        var s = new BoardState();
+        s.Points[12] = 1;
+        s.Points[14] = 1;
+        s.RecalcHighPoint();
+        var entry = new MoveEntryState(s, 2, 2);
+
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryMakePoint(10, new[] { 2 }));
+        Assert.False(entry.IsComplete);
+        Assert.Equal(3, entry.AppliedMoves.Count); // three sub-moves
+        Assert.Equal(2, entry.Current.Points[10]); // point made
+        Assert.Equal(0, entry.Current.Points[14]); // outlier brought all the way in
+        Assert.Equal(0, entry.Current.Points[12]);
+
+        // One 2 remains — completes with a final advance off the made point.
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAdvanceFrom(10, new[] { 2 }));
+        Assert.True(entry.IsComplete);
+
+        var allPlays = MoveGenerator.GeneratePlays(s, 2, 2);
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+    }
+
+    [Fact]
+    public void TryMakePoint_Doubles_FourSubMoveMake_SingleConfig_Completes()
+    {
+        // Two checkers on 8 (= P+2d for d=2), dice (2,2), make the 4-point. The only
+        // make is the four-sub-move {2,2} config 8/6/4 8/6/4 — no shorter make exists
+        // (no checker is one or two dice from 4 except via 8), and the rival {1,3}
+        // config (a checker on 6 and one on 10) is absent. Single config ⇒ commits.
+        var s = new BoardState();
+        s.Points[8] = 2;
+        s.RecalcHighPoint();
+        var entry = new MoveEntryState(s, 2, 2);
+
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(4, new[] { 2 }));
+        Assert.True(entry.IsComplete);
+        Assert.Equal(4, entry.AppliedMoves.Count); // four sub-moves, all dice consumed
+        Assert.Equal(2, entry.Current.Points[4]);  // point made
+        Assert.Equal(0, entry.Current.Points[8]);
+
+        var allPlays = MoveGenerator.GeneratePlays(s, 2, 2);
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+    }
+
+    [Fact]
+    public void TryMakePoint_Unmakeable_OneCheckerLands_MoveOneFallback()
+    {
+        // A single checker on 8, dice (3,1), click the empty 5-point. The point is
+        // unmakeable (one checker cannot put two on it), so the move-one fallback
+        // commits the single sub-move that lands on 5: 8/5 (die 3). Die 1 remains.
+        var s = new BoardState();
+        s.Points[8] = 1;
+        s.RecalcHighPoint();
+        var entry = new MoveEntryState(s, 3, 1);
+
+        // Preferring die 1 first is moot — only die 3 reaches 5 in one step.
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryMakePoint(5, new[] { 1, 3 }));
+        Assert.Single(entry.AppliedMoves);
+        Assert.Equal(8, entry.AppliedMoves[0].FrPt);
+        Assert.Equal(5, entry.AppliedMoves[0].ToPt); // die 3, single landing on the point
+        Assert.Equal(1, entry.Current.Points[5]);
+        Assert.False(entry.IsComplete);
+    }
+
+    [Fact]
+    public void TryMakePoint_OwnOccupiedPoint_ReturnsIllegal_NoStateChange()
+    {
+        // Standard (3,1): 6 holds own checkers — an advance source, never a make
+        // destination. Rejected without inspecting reachability.
+        var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
+        var before = entry.Current.ToMop();
+
+        Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(6, new[] { 3, 1 }));
+        Assert.Empty(entry.AppliedMoves);
+        Assert.Equal(before, entry.Current.ToMop());
+    }
+
+    [Fact]
+    public void TryMakePoint_UnmakeableAndUnreachable_ReturnsIllegal()
+    {
+        // Standard (3,1): the 4-point is empty but no single checker lands there and
+        // it cannot be made — neither make nor move-one has a candidate.
+        var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
+        var before = entry.Current.ToMop();
+
+        Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(4, new[] { 3, 1 }));
+        Assert.Empty(entry.AppliedMoves);
+        Assert.Equal(before, entry.Current.ToMop());
+    }
+
+    [Fact]
+    public void TryMakePoint_AfterComplete_ReturnsIllegal()
+    {
+        var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
+        entry.TryAdvanceFrom(8, new[] { 3, 1 });
+        entry.TryAdvanceFrom(6, new[] { 3, 1 });
+        Assert.True(entry.IsComplete);
+
+        Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(5, new[] { 3, 1 }));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(25)]
+    [InlineData(-1)]
+    [InlineData(26)]
+    public void TryMakePoint_OutOfRange_ReturnsIllegal(int point)
+    {
+        var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
+        Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(point, new[] { 3, 1 }));
+        Assert.Empty(entry.AppliedMoves);
+    }
+
+    [Fact]
+    public void TryMakePoint_NullPreference_Throws()
+    {
+        var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
+        Assert.Throws<ArgumentNullException>(() => entry.TryMakePoint(5, null!));
+    }
 }

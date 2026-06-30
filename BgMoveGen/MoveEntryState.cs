@@ -3,8 +3,8 @@ using BgDataTypes_Lib;
 namespace BgMoveGen;
 
 /// <summary>
-/// Result of a one-click advance against <see cref="MoveEntryState.TryAdvanceFrom"/>
-/// or <see cref="MoveEntryState.TryBearOffMax"/>.
+/// Result of a one-click action against <see cref="MoveEntryState.TryAdvanceFrom"/>,
+/// <see cref="MoveEntryState.TryBearOffMax"/>, or <see cref="MoveEntryState.TryMakePoint"/>.
 /// </summary>
 public enum ClickOutcome
 {
@@ -24,12 +24,19 @@ public enum ClickOutcome
 /// reference for legality.
 ///
 /// Click semantics: one-click. <see cref="TryAdvanceFrom"/> advances the checker on a
-/// clicked point by one legal move (the caller's <c>diePreference</c> resolves which
-/// die when both could play); <see cref="TryBearOffMax"/> handles a tray click by
-/// bearing off the maximum number of checkers when a unique completion achieves it.
+/// clicked <i>source</i> point by one legal move (the caller's <c>diePreference</c>
+/// resolves which die when both could play); <see cref="TryMakePoint"/> handles a click
+/// on a <i>destination</i> point (an empty point or an opponent blot — never an
+/// own-occupied point, which is always a source) by making it: landing two own checkers
+/// there with the fewest sub-moves, hitting any blot automatically; <see cref="TryBearOffMax"/>
+/// handles a tray click by bearing off the maximum number of checkers when a unique
+/// completion achieves it. Own-occupied points are <see cref="TryAdvanceFrom"/> sources
+/// and never <see cref="TryMakePoint"/> destinations, so a consumer can dispatch
+/// advance-else-make by the click target alone without inspecting the board.
 ///
 /// Click point conventions match BgDiag_Razor's event surface:
-///   • 1..24  — regular board points
+///   • 1..24  — regular board points (a source for <see cref="TryAdvanceFrom"/>,
+///              a destination for <see cref="TryMakePoint"/>)
 ///   • 25     — player bar (advancing it = entering)
 ///   • 0      — bear-off tray (handled by <see cref="TryBearOffMax"/>)
 ///
@@ -262,6 +269,169 @@ public sealed class MoveEntryState
     }
 
     /// <summary>
+    /// One-click make-the-point: click a <i>destination</i> point (1..24) to land two
+    /// own checkers on it, hitting any opponent blot there automatically.
+    ///
+    /// Rejected (<see cref="ClickOutcome.Illegal"/>, no state change) when
+    /// <paramref name="point"/> is off the board (not 1..24), the play is already
+    /// complete, or the point already holds an own checker (an own-occupied point is a
+    /// <see cref="TryAdvanceFrom"/> source, never a make destination — letting a consumer
+    /// dispatch advance-else-make by the click target alone).
+    ///
+    /// <b>Make</b> (attempted first): a minimal-depth search for the fewest single-die
+    /// sub-moves that bring the point to two own checkers (it starts empty per the guard)
+    /// while keeping the turn completable. A checker may travel several die-steps to reach
+    /// the point (a combined path whose intermediate sub-moves need not land on it); the
+    /// first arrival onto an opponent blot is generated as a hit. Among the minimal-depth
+    /// solutions the distinct resulting board states are counted (deduped by
+    /// <see cref="Signature"/>): exactly one distinct state ⇒ its path is committed
+    /// (<see cref="ClickOutcome.PlayCompleted"/> if it finishes the play — e.g. a
+    /// non-doubles make consuming both dice — otherwise <see cref="ClickOutcome.MoveCommitted"/>,
+    /// with the unused dice left for further <see cref="TryAdvanceFrom"/> clicks); two or
+    /// more distinct states are a genuine tie ⇒ <see cref="ClickOutcome.Illegal"/>, no
+    /// state change. (Non-doubles force a unique two-source make; doubles can tie only at
+    /// the four-sub-move depth, and only when both source configurations are legal.)
+    /// Minimal depth also resolves any cross-depth choice — a two-sub-move make is taken
+    /// over a three- or four-sub-move one, leaving the most dice for the user.
+    ///
+    /// <b>Move-one</b> (fallback, only if the point is unmakeable at every depth): among
+    /// the legal next single moves that land on <paramref name="point"/>, the one whose
+    /// die ranks earliest in <paramref name="diePreference"/> is committed (a die absent
+    /// from the preference ranks last) — the same die-selection as <see cref="TryAdvanceFrom"/>.
+    /// This fallback only places a checker via a <i>single</i> sub-move landing on the
+    /// point; it does not chase a combined single-checker path (use <see cref="TryAdvanceFrom"/>
+    /// for that). None ⇒ <see cref="ClickOutcome.Illegal"/>. Because make is tried before
+    /// move-one, a 3-1 click on an empty 5-point makes it (8/5 6/5) rather than moving a
+    /// lone 8/5.
+    ///
+    /// Legality and reachability are not re-implemented: candidate single moves come from
+    /// <see cref="MoveGenerator.SingleMoves"/>, "the turn can still complete" is the shared
+    /// <see cref="CanReachTarget"/> (via <see cref="MoveKeepsTargetReachable"/> in the
+    /// move-one branch), and every commit goes through <see cref="CommitMove"/> so
+    /// canonicalization, undo, and the legal-click recompute stay single-sourced. The
+    /// <see cref="Move.ToPt"/> hit encoding stays hidden — the click is a positive point.
+    /// </summary>
+    public ClickOutcome TryMakePoint(int point, IReadOnlyList<int> diePreference)
+    {
+        ArgumentNullException.ThrowIfNull(diePreference);
+        if (point < 1 || point > 24) return ClickOutcome.Illegal;
+        if (IsComplete) return ClickOutcome.Illegal;
+        if (_currentState.Points[point] > 0) return ClickOutcome.Illegal; // own-occupied ⇒ a source
+
+        // ── Make (preferred) ──────────────────────────────────────
+        // Enumerate minimal-depth make paths on scratch copies — _currentState and
+        // _remainingDice stay untouched until we decide to commit.
+        var work = _currentState.Copy();
+        var remaining = new List<int>(_remainingDice);
+        var makes = new Dictionary<long, List<(Move move, int die)>>();
+        int minDepth = int.MaxValue;
+        CollectMinimalMakePaths(work, remaining, point, new List<(Move, int)>(), makes, ref minDepth);
+
+        if (makes.Count >= 2) return ClickOutcome.Illegal; // genuine tie at the minimal depth
+        if (makes.Count == 1)
+        {
+            foreach (var path in makes.Values)
+                foreach (var (m, d) in path)
+                    CommitMove(m, d);
+            return IsComplete ? ClickOutcome.PlayCompleted : ClickOutcome.MoveCommitted;
+        }
+
+        // ── Move-one fallback (point unmakeable at every depth) ───
+        Move best = default;
+        int bestDie = 0;
+        int bestRank = int.MaxValue;
+        bool found = false;
+
+        foreach (var (m, die) in ComputeLegalNextSingleMoves())
+        {
+            if (Math.Abs(m.ToPt) != point) continue; // |ToPt| == point: lands here (hit or not)
+            int rank = DieRank(diePreference, die);
+            if (!found || rank < bestRank)
+            {
+                best = m;
+                bestDie = die;
+                bestRank = rank;
+                found = true;
+            }
+        }
+
+        if (!found) return ClickOutcome.Illegal;
+
+        CommitMove(best, bestDie);
+        return IsComplete ? ClickOutcome.PlayCompleted : ClickOutcome.MoveCommitted;
+    }
+
+    /// <summary>
+    /// Depth-first search for the make paths of <i>minimal</i> length that land two own
+    /// checkers on <paramref name="point"/> (empty at entry per the caller's guard) and
+    /// keep a generated final state reachable with the dice that remain. Each die-step is
+    /// a legal single move over <paramref name="remaining"/>; a branch stops as soon as the
+    /// point is made (a deeper make is not minimal). On finding a make at depth
+    /// <c>path.Count</c>: a shorter depth supersedes (clears prior, lowering
+    /// <paramref name="minDepth"/>); an equal depth is kept, deduped by resulting-state
+    /// <see cref="Signature"/> into <paramref name="into"/> — so its final count is the
+    /// number of genuinely distinct minimal makes. Mutates <paramref name="state"/> /
+    /// <paramref name="remaining"/> / <paramref name="path"/> transiently but restores all
+    /// three before returning.
+    /// </summary>
+    private void CollectMinimalMakePaths(
+        BoardState state, List<int> remaining, int point,
+        List<(Move move, int die)> path,
+        Dictionary<long, List<(Move move, int die)>> into,
+        ref int minDepth)
+    {
+        // No deeper search can beat or tie a make already found at this depth.
+        if (path.Count >= minDepth) return;
+
+        var tried = new HashSet<int>();
+        Span<Move> buffer = stackalloc Move[30];
+
+        for (int idx = 0; idx < remaining.Count; idx++)
+        {
+            int d = remaining[idx];
+            if (!tried.Add(d)) continue;
+
+            remaining.RemoveAt(idx);
+            int count = MoveGenerator.SingleMoves(state, d, buffer);
+            for (int i = 0; i < count; i++)
+            {
+                var m = buffer[i];
+                state.ApplyMove(m);
+                path.Add((m, d));
+
+                if (state.Points[point] == 2)
+                {
+                    // Point made. A valid make iff the turn can still complete with the
+                    // dice now left; record it, then stop — descending further is not minimal.
+                    if (CanReachTarget(state, remaining))
+                    {
+                        int depth = path.Count;
+                        long sig = Signature(state);
+                        if (depth < minDepth)
+                        {
+                            minDepth = depth;
+                            into.Clear();
+                            into[sig] = new List<(Move, int)>(path);
+                        }
+                        else if (depth == minDepth && !into.ContainsKey(sig))
+                        {
+                            into[sig] = new List<(Move, int)>(path);
+                        }
+                    }
+                }
+                else
+                {
+                    CollectMinimalMakePaths(state, remaining, point, path, into, ref minDepth);
+                }
+
+                path.RemoveAt(path.Count - 1);
+                state.UndoMove(m);
+            }
+            remaining.Insert(idx, d);
+        }
+    }
+
+    /// <summary>
     /// Depth-first walk of every ordering of <paramref name="remaining"/> dice played
     /// as legal single moves from <paramref name="state"/>. Each ordering that consumes
     /// all dice and lands on a generated final state records — keyed by that state's
@@ -395,13 +565,7 @@ public sealed class MoveEntryState
                 var m = buffer[i];
                 if (added.Contains(m)) continue;
 
-                _currentState.ApplyMove(m);
-                _remainingDice.Remove(d);
-                bool canComplete = CanReachTarget(_currentState, _remainingDice);
-                _remainingDice.Add(d);
-                _currentState.UndoMove(m);
-
-                if (canComplete)
+                if (MoveKeepsTargetReachable(_currentState, _remainingDice, m, d))
                 {
                     result.Add((m, d));
                     added.Add(m);
@@ -409,6 +573,24 @@ public sealed class MoveEntryState
             }
         }
         return result;
+    }
+
+    /// <summary>
+    /// True iff playing <paramref name="m"/> (consuming <paramref name="die"/>) from
+    /// <paramref name="state"/> leaves a generated final state reachable with the dice
+    /// still in <paramref name="remaining"/>. Applies the move, defers to the shared
+    /// <see cref="CanReachTarget"/> over the dice that remain, then undoes — leaving both
+    /// <paramref name="state"/> and <paramref name="remaining"/> unchanged. The single
+    /// source for the "legal single move that keeps the turn completable" predicate.
+    /// </summary>
+    private bool MoveKeepsTargetReachable(BoardState state, List<int> remaining, Move m, int die)
+    {
+        state.ApplyMove(m);
+        remaining.Remove(die);
+        bool canComplete = CanReachTarget(state, remaining);
+        remaining.Add(die);
+        state.UndoMove(m);
+        return canComplete;
     }
 
     /// <summary>
