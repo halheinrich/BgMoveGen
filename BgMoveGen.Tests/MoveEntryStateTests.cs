@@ -1068,12 +1068,15 @@ public class MoveEntryStateTests
     [Fact]
     public void TryMakePoint_UnmakeableAndUnreachable_ReturnsIllegal()
     {
-        // Standard (3,1): the 4-point is empty but no single checker lands there and
-        // it cannot be made — neither make nor move-one has a candidate.
+        // Standard (3,1): the 1-point is below the reach floor — the nearest own
+        // checker (6) covers at most 4 pips (3+1), landing on 2 — so no checker
+        // reaches 1 by any single- or combined-die path, and it cannot be made.
+        // Neither make nor land-one has a candidate. (The 4-point would now land via
+        // the combined 8/7/4, so the genuinely-unreachable point moved to 1.)
         var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
         var before = entry.Current.ToMop();
 
-        Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(4, new[] { 3, 1 }));
+        Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(1, new[] { 3, 1 }));
         Assert.Empty(entry.AppliedMoves);
         Assert.Equal(before, entry.Current.ToMop());
     }
@@ -1106,5 +1109,99 @@ public class MoveEntryStateTests
     {
         var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
         Assert.Throws<ArgumentNullException>(() => entry.TryMakePoint(5, null!));
+    }
+
+    // ── Land-one fallback via a combined (multi-die) path ─────────
+    //
+    // The destination can't be made and has no single-die landing, but one checker
+    // reaches it by walking two dice. The make-first/else-land-one search lands that
+    // checker via the minimal combined path. Modelled on the live repro XGID
+    // aAB-CCCA--a-b----cBc-b-ba-:…:62 (only legal hit 18/16 16/10*).
+
+    private static BoardState CombinedHitRepro(int blotPoint)
+    {
+        // Own checker on 18; opponent anchor on 12 blocks the 18/12 (die-6) start, so
+        // the only route to 10 is 18/16 (die 2) then 16/10 (die 6). blotPoint carries
+        // the opponent blot (10 for the hit case, 0 to leave the point empty).
+        var s = new BoardState();
+        s.Points[18] = 1;
+        s.Points[12] = -2;        // opponent anchor — blocks 18→12
+        if (blotPoint != 0) s.Points[blotPoint] = -1;
+        s.RecalcHighPoint();
+        return s;
+    }
+
+    [Fact]
+    public void TryMakePoint_CombinedPathHit_LandsViaTwoDice_Completes()
+    {
+        // Repro: blot on 10, dice (6,2). No make (one checker), no single-die landing
+        // on 10, but 18/16 16/10* lands it. Without the combined-path fallback this
+        // no-ops; with it the play completes (both dice consumed) on the hit.
+        var s = CombinedHitRepro(blotPoint: 10);
+        var entry = new MoveEntryState(s, 6, 2);
+
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(10, new[] { 6, 2 }));
+        Assert.True(entry.IsComplete);
+        Assert.Equal(1, entry.Current.Points[10]); // own checker landed
+        Assert.Equal(-1, entry.Current.Points[0]); // opponent blot sent to the bar
+
+        var allPlays = MoveGenerator.GeneratePlays(s, 6, 2);
+        Assert.Contains(allPlays,
+            p => p.DeduplicationKey() == entry.CompletedPlay!.Value.DeduplicationKey());
+    }
+
+    [Fact]
+    public void TryMakePoint_CombinedPathEmptyPoint_LandsViaTwoDice_Completes()
+    {
+        // Same geometry, point 10 empty (no blot): 18/16 16/10 lands one checker with
+        // no hit. Empty point and opponent blot are symmetric for the fallback.
+        var s = CombinedHitRepro(blotPoint: 0);
+        var entry = new MoveEntryState(s, 6, 2);
+
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(10, new[] { 6, 2 }));
+        Assert.True(entry.IsComplete);
+        Assert.Equal(1, entry.Current.Points[10]); // own checker landed
+        Assert.Equal(0, entry.Current.Points[0]);  // nothing hit
+
+        var allPlays = MoveGenerator.GeneratePlays(s, 6, 2);
+        Assert.Contains(allPlays,
+            p => p.DeduplicationKey() == entry.CompletedPlay!.Value.DeduplicationKey());
+    }
+
+    [Fact]
+    public void TryMakePoint_CombinedPathUnreachable_ReturnsIllegal()
+    {
+        // Repro position, click the 24-point: the lone checker on 18 only moves toward
+        // home, so 24 is unreachable by any path. Neither make nor land-one applies.
+        var s = CombinedHitRepro(blotPoint: 10);
+        var entry = new MoveEntryState(s, 6, 2);
+        var before = entry.Current.ToMop();
+
+        Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(24, new[] { 6, 2 }));
+        Assert.Empty(entry.AppliedMoves);
+        Assert.Equal(before, entry.Current.ToMop());
+    }
+
+    [Fact]
+    public void TryMakePoint_LandOne_PrefersSingleDieOverCombinedPath()
+    {
+        // Own on 12 (one die from 10 via the 2) and on 18 (reaches 10 only by a
+        // combined two-die path), dice (6,2). The point is unmakeable — putting both
+        // on 10 needs three die-steps but only two dice are available — so the
+        // fallback lands one checker, and the minimal-depth (single-die 12/10) landing
+        // is preferred over the deeper 18-combined one, leaving the larger die.
+        var s = new BoardState();
+        s.Points[12] = 1;
+        s.Points[18] = 1;
+        s.RecalcHighPoint();
+        var entry = new MoveEntryState(s, 6, 2);
+
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryMakePoint(10, new[] { 6, 2 }));
+        Assert.Single(entry.AppliedMoves);
+        Assert.Equal(12, entry.AppliedMoves[0].FrPt); // depth-1 landing chosen
+        Assert.Equal(10, entry.AppliedMoves[0].ToPt); // die 2
+        Assert.Equal(1, entry.Current.Points[10]);
+        Assert.Equal(0, entry.Current.Points[12]);
+        Assert.False(entry.IsComplete); // the 6 remains
     }
 }

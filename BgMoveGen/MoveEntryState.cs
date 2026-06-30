@@ -294,22 +294,28 @@ public sealed class MoveEntryState
     /// Minimal depth also resolves any cross-depth choice — a two-sub-move make is taken
     /// over a three- or four-sub-move one, leaving the most dice for the user.
     ///
-    /// <b>Move-one</b> (fallback, only if the point is unmakeable at every depth): among
-    /// the legal next single moves that land on <paramref name="point"/>, the one whose
-    /// die ranks earliest in <paramref name="diePreference"/> is committed (a die absent
-    /// from the preference ranks last) — the same die-selection as <see cref="TryAdvanceFrom"/>.
-    /// This fallback only places a checker via a <i>single</i> sub-move landing on the
-    /// point; it does not chase a combined single-checker path (use <see cref="TryAdvanceFrom"/>
-    /// for that). None ⇒ <see cref="ClickOutcome.Illegal"/>. Because make is tried before
-    /// move-one, a 3-1 click on an empty 5-point makes it (8/5 6/5) rather than moving a
-    /// lone 8/5.
+    /// <b>Land-one</b> (fallback, only if the point is unmakeable at every depth): the same
+    /// minimal-depth search, now for a <i>single</i> own checker on <paramref name="point"/>.
+    /// It prefers a direct single-die landing (depth 1) and, only when none exists, a
+    /// combined multi-die path — one checker walking several die-steps to the point (e.g.
+    /// <c>18/16 16/10*</c> when the direct routes are blocked). Empty point and opponent
+    /// blot are symmetric; the arrival onto a blot is generated as a hit. A unique
+    /// minimal-depth landing is committed; a tie (two distinct landing states) or none ⇒
+    /// <see cref="ClickOutcome.Illegal"/>. Because make is tried before land-one, a 3-1
+    /// click on an empty 5-point makes it (8/5 6/5) rather than landing a lone 8/5.
+    ///
+    /// <paramref name="diePreference"/> is retained for signature compatibility but no
+    /// longer influences the outcome: both make and land-one commit only a unique
+    /// minimal-depth solution and otherwise no-op, so there is no die to choose. It is
+    /// still null-checked.
     ///
     /// Legality and reachability are not re-implemented: candidate single moves come from
     /// <see cref="MoveGenerator.SingleMoves"/>, "the turn can still complete" is the shared
-    /// <see cref="CanReachTarget"/> (via <see cref="MoveKeepsTargetReachable"/> in the
-    /// move-one branch), and every commit goes through <see cref="CommitMove"/> so
-    /// canonicalization, undo, and the legal-click recompute stay single-sourced. The
-    /// <see cref="Move.ToPt"/> hit encoding stays hidden — the click is a positive point.
+    /// <see cref="CanReachTarget"/>, and every commit goes through <see cref="CommitMove"/>
+    /// so canonicalization, undo, and the legal-click recompute stay single-sourced. Make
+    /// and land-one are one routine — <see cref="CollectMinimalLandingPaths"/> at target
+    /// count two then one. The <see cref="Move.ToPt"/> hit encoding stays hidden — the
+    /// click is a positive point.
     /// </summary>
     public ClickOutcome TryMakePoint(int point, IReadOnlyList<int> diePreference)
     {
@@ -318,69 +324,78 @@ public sealed class MoveEntryState
         if (IsComplete) return ClickOutcome.Illegal;
         if (_currentState.Points[point] > 0) return ClickOutcome.Illegal; // own-occupied ⇒ a source
 
-        // ── Make (preferred) ──────────────────────────────────────
-        // Enumerate minimal-depth make paths on scratch copies — _currentState and
-        // _remainingDice stay untouched until we decide to commit.
+        // ── Make (two own checkers on the point), preferred ────────
+        var makes = CollectMinimalLandings(point, 2);
+        if (makes.Count >= 2) return ClickOutcome.Illegal; // genuine tie at the minimal depth
+        var makePath = UniquePathOrNull(makes);
+        if (makePath is not null) return CommitPath(makePath);
+
+        // ── Land-one fallback (one own checker), only if unmakeable ─
+        var lands = CollectMinimalLandings(point, 1);
+        var landPath = UniquePathOrNull(lands);
+        if (landPath is not null) return CommitPath(landPath);
+
+        return ClickOutcome.Illegal; // a tie or no landing at all
+    }
+
+    /// <summary>
+    /// Run <see cref="CollectMinimalLandingPaths"/> for <paramref name="targetCount"/> own
+    /// checkers on <paramref name="point"/> against scratch copies of the current state and
+    /// remaining dice (the live state is untouched until a caller commits). Returns the
+    /// distinct minimal-depth landing paths, keyed by resulting-state signature.
+    /// </summary>
+    private Dictionary<long, List<(Move move, int die)>> CollectMinimalLandings(int point, int targetCount)
+    {
         var work = _currentState.Copy();
         var remaining = new List<int>(_remainingDice);
-        var makes = new Dictionary<long, List<(Move move, int die)>>();
+        var into = new Dictionary<long, List<(Move move, int die)>>();
         int minDepth = int.MaxValue;
-        CollectMinimalMakePaths(work, remaining, point, new List<(Move, int)>(), makes, ref minDepth);
+        CollectMinimalLandingPaths(work, remaining, point, targetCount, new List<(Move, int)>(), into, ref minDepth);
+        return into;
+    }
 
-        if (makes.Count >= 2) return ClickOutcome.Illegal; // genuine tie at the minimal depth
-        if (makes.Count == 1)
-        {
-            foreach (var path in makes.Values)
-                foreach (var (m, d) in path)
-                    CommitMove(m, d);
-            return IsComplete ? ClickOutcome.PlayCompleted : ClickOutcome.MoveCommitted;
-        }
+    /// <summary>The single path when exactly one distinct landing was found, else null.</summary>
+    private static List<(Move move, int die)>? UniquePathOrNull(
+        Dictionary<long, List<(Move move, int die)>> paths)
+    {
+        if (paths.Count != 1) return null;
+        foreach (var p in paths.Values) return p;
+        return null; // unreachable: Count == 1
+    }
 
-        // ── Move-one fallback (point unmakeable at every depth) ───
-        Move best = default;
-        int bestDie = 0;
-        int bestRank = int.MaxValue;
-        bool found = false;
-
-        foreach (var (m, die) in ComputeLegalNextSingleMoves())
-        {
-            if (Math.Abs(m.ToPt) != point) continue; // |ToPt| == point: lands here (hit or not)
-            int rank = DieRank(diePreference, die);
-            if (!found || rank < bestRank)
-            {
-                best = m;
-                bestDie = die;
-                bestRank = rank;
-                found = true;
-            }
-        }
-
-        if (!found) return ClickOutcome.Illegal;
-
-        CommitMove(best, bestDie);
+    /// <summary>Commit each step of <paramref name="path"/> through <see cref="CommitMove"/>,
+    /// returning the outcome by whether the play is now complete.</summary>
+    private ClickOutcome CommitPath(List<(Move move, int die)> path)
+    {
+        foreach (var (m, d) in path) CommitMove(m, d);
         return IsComplete ? ClickOutcome.PlayCompleted : ClickOutcome.MoveCommitted;
     }
 
     /// <summary>
-    /// Depth-first search for the make paths of <i>minimal</i> length that land two own
-    /// checkers on <paramref name="point"/> (empty at entry per the caller's guard) and
-    /// keep a generated final state reachable with the dice that remain. Each die-step is
-    /// a legal single move over <paramref name="remaining"/>; a branch stops as soon as the
-    /// point is made (a deeper make is not minimal). On finding a make at depth
-    /// <c>path.Count</c>: a shorter depth supersedes (clears prior, lowering
-    /// <paramref name="minDepth"/>); an equal depth is kept, deduped by resulting-state
-    /// <see cref="Signature"/> into <paramref name="into"/> — so its final count is the
-    /// number of genuinely distinct minimal makes. Mutates <paramref name="state"/> /
-    /// <paramref name="remaining"/> / <paramref name="path"/> transiently but restores all
-    /// three before returning.
+    /// Depth-first search for the paths of <i>minimal</i> length that land
+    /// <paramref name="targetCount"/> own checkers on <paramref name="point"/> (which holds
+    /// no own checker at entry per the caller's guard) and keep a generated final state
+    /// reachable with the dice that remain. Each die-step is a legal single move over
+    /// <paramref name="remaining"/>; a branch stops as soon as the point reaches
+    /// <paramref name="targetCount"/> (a deeper landing is not minimal). The make path
+    /// (<paramref name="targetCount"/> == 2) and the land-one fallback
+    /// (<paramref name="targetCount"/> == 1) are the same search at two targets — a
+    /// checker may walk several die-steps to the point (a combined path whose intermediate
+    /// sub-moves need not land on it), and the arrival onto an opponent blot is generated
+    /// as a hit. On finding a landing at depth <c>path.Count</c>: a shorter depth supersedes
+    /// (clears prior, lowering <paramref name="minDepth"/>); an equal depth is kept, deduped
+    /// by resulting-state <see cref="Signature"/> into <paramref name="into"/> — so its
+    /// final count is the number of genuinely distinct minimal landings. Mutates
+    /// <paramref name="state"/> / <paramref name="remaining"/> / <paramref name="path"/>
+    /// transiently but restores all three before returning.
     /// </summary>
-    private void CollectMinimalMakePaths(
-        BoardState state, List<int> remaining, int point,
+    private void CollectMinimalLandingPaths(
+        BoardState state, List<int> remaining, int point, int targetCount,
         List<(Move move, int die)> path,
         Dictionary<long, List<(Move move, int die)>> into,
         ref int minDepth)
     {
-        // No deeper search can beat or tie a make already found at this depth.
+        // No deeper search can beat or tie a landing already found at this depth.
         if (path.Count >= minDepth) return;
 
         var tried = new HashSet<int>();
@@ -399,10 +414,10 @@ public sealed class MoveEntryState
                 state.ApplyMove(m);
                 path.Add((m, d));
 
-                if (state.Points[point] == 2)
+                if (state.Points[point] == targetCount)
                 {
-                    // Point made. A valid make iff the turn can still complete with the
-                    // dice now left; record it, then stop — descending further is not minimal.
+                    // Target reached. A valid landing iff the turn can still complete with
+                    // the dice now left; record it, then stop — descending is not minimal.
                     if (CanReachTarget(state, remaining))
                     {
                         int depth = path.Count;
@@ -421,7 +436,7 @@ public sealed class MoveEntryState
                 }
                 else
                 {
-                    CollectMinimalMakePaths(state, remaining, point, path, into, ref minDepth);
+                    CollectMinimalLandingPaths(state, remaining, point, targetCount, path, into, ref minDepth);
                 }
 
                 path.RemoveAt(path.Count - 1);
