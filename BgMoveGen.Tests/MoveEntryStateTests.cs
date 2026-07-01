@@ -920,7 +920,7 @@ public class MoveEntryStateTests
         var initial = BoardState.Standard();
         var entry = new MoveEntryState(initial, 3, 1);
 
-        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(5, new[] { 3, 1 }));
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(5));
         Assert.True(entry.IsComplete);
         Assert.Equal(2, entry.Current.Points[5]); // point made
         Assert.Equal(2, entry.Current.Points[8]); // 3 - 1
@@ -945,7 +945,7 @@ public class MoveEntryStateTests
         s.RecalcHighPoint();
         var entry = new MoveEntryState(s, 3, 1);
 
-        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(5, new[] { 3, 1 }));
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(5));
         Assert.True(entry.IsComplete);
         Assert.Equal(2, entry.Current.Points[5]);  // two own checkers cover the point
         Assert.Equal(-1, entry.Current.Points[0]); // opponent sent to the bar
@@ -968,7 +968,7 @@ public class MoveEntryStateTests
         s.RecalcHighPoint();
         var entry = new MoveEntryState(s, 4, 4);
 
-        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryMakePoint(20, new[] { 4 }));
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryMakePoint(20));
         Assert.False(entry.IsComplete);
         Assert.Equal(2, entry.AppliedMoves.Count); // exactly two sub-moves
         Assert.Equal(2, entry.Current.Points[20]); // point made
@@ -995,7 +995,7 @@ public class MoveEntryStateTests
         s.RecalcHighPoint();
         var entry = new MoveEntryState(s, 2, 2);
 
-        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryMakePoint(10, new[] { 2 }));
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryMakePoint(10));
         Assert.False(entry.IsComplete);
         Assert.Equal(3, entry.AppliedMoves.Count); // three sub-moves
         Assert.Equal(2, entry.Current.Points[10]); // point made
@@ -1022,7 +1022,7 @@ public class MoveEntryStateTests
         s.RecalcHighPoint();
         var entry = new MoveEntryState(s, 2, 2);
 
-        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(4, new[] { 2 }));
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(4));
         Assert.True(entry.IsComplete);
         Assert.Equal(4, entry.AppliedMoves.Count); // four sub-moves, all dice consumed
         Assert.Equal(2, entry.Current.Points[4]);  // point made
@@ -1043,8 +1043,8 @@ public class MoveEntryStateTests
         s.RecalcHighPoint();
         var entry = new MoveEntryState(s, 3, 1);
 
-        // Preferring die 1 first is moot — only die 3 reaches 5 in one step.
-        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryMakePoint(5, new[] { 1, 3 }));
+        // Only die 3 reaches 5 in one step, so the landing is unique.
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryMakePoint(5));
         Assert.Single(entry.AppliedMoves);
         Assert.Equal(8, entry.AppliedMoves[0].FrPt);
         Assert.Equal(5, entry.AppliedMoves[0].ToPt); // die 3, single landing on the point
@@ -1060,7 +1060,7 @@ public class MoveEntryStateTests
         var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
         var before = entry.Current.ToMop();
 
-        Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(6, new[] { 3, 1 }));
+        Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(6));
         Assert.Empty(entry.AppliedMoves);
         Assert.Equal(before, entry.Current.ToMop());
     }
@@ -1076,7 +1076,7 @@ public class MoveEntryStateTests
         var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
         var before = entry.Current.ToMop();
 
-        Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(1, new[] { 3, 1 }));
+        Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(1));
         Assert.Empty(entry.AppliedMoves);
         Assert.Equal(before, entry.Current.ToMop());
     }
@@ -1089,7 +1089,7 @@ public class MoveEntryStateTests
         entry.TryAdvanceFrom(6, new[] { 3, 1 });
         Assert.True(entry.IsComplete);
 
-        Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(5, new[] { 3, 1 }));
+        Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(5));
     }
 
     [Theory]
@@ -1100,15 +1100,8 @@ public class MoveEntryStateTests
     public void TryMakePoint_OutOfRange_ReturnsIllegal(int point)
     {
         var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
-        Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(point, new[] { 3, 1 }));
+        Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(point));
         Assert.Empty(entry.AppliedMoves);
-    }
-
-    [Fact]
-    public void TryMakePoint_NullPreference_Throws()
-    {
-        var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
-        Assert.Throws<ArgumentNullException>(() => entry.TryMakePoint(5, null!));
     }
 
     // ── Land-one fallback via a combined (multi-die) path ─────────
@@ -1140,7 +1133,7 @@ public class MoveEntryStateTests
         var s = CombinedHitRepro(blotPoint: 10);
         var entry = new MoveEntryState(s, 6, 2);
 
-        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(10, new[] { 6, 2 }));
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(10));
         Assert.True(entry.IsComplete);
         Assert.Equal(1, entry.Current.Points[10]); // own checker landed
         Assert.Equal(-1, entry.Current.Points[0]); // opponent blot sent to the bar
@@ -1158,7 +1151,7 @@ public class MoveEntryStateTests
         var s = CombinedHitRepro(blotPoint: 0);
         var entry = new MoveEntryState(s, 6, 2);
 
-        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(10, new[] { 6, 2 }));
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(10));
         Assert.True(entry.IsComplete);
         Assert.Equal(1, entry.Current.Points[10]); // own checker landed
         Assert.Equal(0, entry.Current.Points[0]);  // nothing hit
@@ -1177,7 +1170,7 @@ public class MoveEntryStateTests
         var entry = new MoveEntryState(s, 6, 2);
         var before = entry.Current.ToMop();
 
-        Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(24, new[] { 6, 2 }));
+        Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(24));
         Assert.Empty(entry.AppliedMoves);
         Assert.Equal(before, entry.Current.ToMop());
     }
@@ -1196,7 +1189,7 @@ public class MoveEntryStateTests
         s.RecalcHighPoint();
         var entry = new MoveEntryState(s, 6, 2);
 
-        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryMakePoint(10, new[] { 6, 2 }));
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryMakePoint(10));
         Assert.Single(entry.AppliedMoves);
         Assert.Equal(12, entry.AppliedMoves[0].FrPt); // depth-1 landing chosen
         Assert.Equal(10, entry.AppliedMoves[0].ToPt); // die 2

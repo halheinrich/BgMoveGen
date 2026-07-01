@@ -304,10 +304,10 @@ public sealed class MoveEntryState
     /// <see cref="ClickOutcome.Illegal"/>. Because make is tried before land-one, a 3-1
     /// click on an empty 5-point makes it (8/5 6/5) rather than landing a lone 8/5.
     ///
-    /// <paramref name="diePreference"/> is retained for signature compatibility but no
-    /// longer influences the outcome: both make and land-one commit only a unique
-    /// minimal-depth solution and otherwise no-op, so there is no die to choose. It is
-    /// still null-checked.
+    /// There is no die-preference parameter: both make and land-one commit only a unique
+    /// minimal-depth solution and otherwise no-op, so there is never a die to choose
+    /// (unlike <see cref="TryAdvanceFrom"/>, where the caller picks which die a source
+    /// advance consumes).
     ///
     /// Legality and reachability are not re-implemented: candidate single moves come from
     /// <see cref="MoveGenerator.SingleMoves"/>, "the turn can still complete" is the shared
@@ -317,9 +317,8 @@ public sealed class MoveEntryState
     /// count two then one. The <see cref="Move.ToPt"/> hit encoding stays hidden — the
     /// click is a positive point.
     /// </summary>
-    public ClickOutcome TryMakePoint(int point, IReadOnlyList<int> diePreference)
+    public ClickOutcome TryMakePoint(int point)
     {
-        ArgumentNullException.ThrowIfNull(diePreference);
         if (point < 1 || point > 24) return ClickOutcome.Illegal;
         if (IsComplete) return ClickOutcome.Illegal;
         if (_currentState.Points[point] > 0) return ClickOutcome.Illegal; // own-occupied ⇒ a source
