@@ -313,6 +313,12 @@ int get_version();
 
 ## Pitfalls
 
+- **No-legal-move returns a pass, not an empty list.** For a dance /
+  closed-out position, `GeneratePlays` returns a one-element list holding the
+  empty pass `Play` (`Count == 0`) — never `Count == 0` on the list itself.
+  `GenerateStates` / `EnumerateStates` inherit this (one successor: the
+  unchanged input). Consumers must handle a single "pass" candidate, not an
+  empty collection; the C interop mirrors it (successor count always `>= 1`).
 - **Bearing-off overshoot.** Legal only from the highest occupied point in
   the home board (`HighPointOccupied`). The die must exceed `FrPt` *and*
   `FrPt == HighPointOccupied`. The `NextMove` iterator and `TryMakeMove`

@@ -425,6 +425,14 @@ public static class MoveGenerator
 
     /// <summary>
     /// Generate all legal complete plays for a dice roll.
+    ///
+    /// <para>
+    /// <b>No-legal-move convention.</b> When the position admits no legal move
+    /// (a dance / closed-out on the bar), the result is a one-element list
+    /// holding the empty pass <see cref="Play"/> (<c>Count == 0</c>) — never an
+    /// empty list. Callers must handle a single "pass" candidate; the returned
+    /// list is never <c>Count == 0</c>.
+    /// </para>
     /// </summary>
     public static List<Play> GeneratePlays(BoardState state, int die1, int die2)
     {
@@ -438,6 +446,12 @@ public static class MoveGenerator
     /// Generate all unique legal successor board states for a dice roll.
     /// Convenience wrapper for consumers that only need resulting positions
     /// (e.g., RL evaluation), not the move sequences.
+    ///
+    /// <para>
+    /// Inherits the no-legal-move convention of <see cref="GeneratePlays"/>: a
+    /// dance / closed-out position yields a single successor (the input state,
+    /// with the empty pass play applied — i.e. unchanged), never an empty list.
+    /// </para>
     /// </summary>
     public static List<BoardState> GenerateStates(BoardState state, int die1, int die2)
     {
@@ -457,6 +471,12 @@ public static class MoveGenerator
     /// Lazily enumerate all unique legal successor board states for a dice roll.
     /// Each yielded BoardState is an independent copy — safe to store or discard.
     /// Allows early termination (e.g., alpha-beta pruning, first-legal-move).
+    ///
+    /// <para>
+    /// Inherits the no-legal-move convention of <see cref="GeneratePlays"/>: a
+    /// dance / closed-out position yields exactly one state (the unchanged
+    /// input), never an empty sequence.
+    /// </para>
     /// </summary>
     public static IEnumerable<BoardState> EnumerateStates(BoardState state, int die1, int die2)
     {

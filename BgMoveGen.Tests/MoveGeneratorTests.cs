@@ -593,6 +593,24 @@ public class IsLegalPlayTests
     }
 
     [Fact]
+    public void GeneratePlays_NoLegalMove_ReturnsSingleEmptyPlay()
+    {
+        // Pins the no-legal-move convention: a dance / closed-out position
+        // yields a one-element list holding the empty pass play, never an empty
+        // list. Same closed-out setup as EmptyPlay_OnClosedOutPosition_ReturnsTrue:
+        // on-roll has a bar checker, opponent holds every entry point (19..24).
+        var state = new BoardState();
+        state.Points[25] = 1;
+        for (int i = 19; i <= 24; i++) state.Points[i] = -2;
+        state.RecalcHighPoint();
+
+        var plays = MoveGenerator.GeneratePlays(state, 6, 4);
+
+        Assert.Single(plays);
+        Assert.Equal(0, plays[0].Count);
+    }
+
+    [Fact]
     public void HitInvariant_DeduplicationKey_CrossesHitNonHit()
     {
         // DeduplicationKey is order- and hit-invariant by contract. A play that
