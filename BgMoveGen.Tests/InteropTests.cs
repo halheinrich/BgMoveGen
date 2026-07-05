@@ -105,7 +105,7 @@ public unsafe class InteropTests
         var results = RunInterop(MakeExternal(s), 3, 1);
 
         // Pass = 1 flipped state with no moves applied
-        Assert.Equal(1, results.Length);
+        Assert.Single(results);
 
         // Flipped: opponent's blocking points become player's points
         // Original opponent had -2 on pts[19..24] → after flip: +2 on pts[0..5] (external)
