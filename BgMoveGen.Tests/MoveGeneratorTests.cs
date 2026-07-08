@@ -611,32 +611,162 @@ public class IsLegalPlayTests
     }
 
     [Fact]
-    public void HitInvariant_DeduplicationKey_CrossesHitNonHit()
+    public void HitSensitive_HitlessEncodingOfHittingPlay_IsRejected()
     {
-        // DeduplicationKey is order- and hit-invariant by contract. A play that
-        // differs from a legal one only in the hit flag still matches by key.
-        // This pins the documented contract — if a future maintainer tightens
-        // the equivalence to be hit-sensitive, this test fails loud.
+        // Deliberate inversion of the old HitInvariant_DeduplicationKey pin
+        // (mirroring the producer-side reversal in BgDataTypes_Lib's PlayTests).
+        // The old DeduplicationKey stripped the hit sign, so a play differing
+        // from a legal one only in the hit flag still matched — which underlay
+        // the ApplyPlay/IsLegalPlay silent board-corruption hazard: a hit-less
+        // encoding could validate and then apply without barring the blot.
+        // Canonical Play equality is fully hit-sensitive: 24/18 is not the
+        // same play as 24/18*, so the hit-less encoding is rejected.
         var state = new BoardState();
         state.Points[24] = 2;
         state.Points[13] = 5;
         state.Points[6] = 5;
         state.Points[8] = 3;
-        state.Points[18] = -1;   // opponent blot — a 6 from 24 hits it
+        state.Points[18] = -1;   // opponent blot — a 6 from 24 must hit it
         state.Points[1] = -2;
         state.Points[12] = -5;
         state.Points[17] = -2;
         state.Points[19] = -5;
         state.RecalcHighPoint();
 
-        // 24/18* is the legal hit move; 24/-18 (hit) round-trips through the
-        // generator naturally. We construct a play that lists 24/18 (no hit
-        // encoding) — the dedup key takes |ToPt|, so it should still match.
         var noHitVariant = new Play();
-        noHitVariant.Add(new Move(24, 18));   // ToPt positive — non-hit form
+        noHitVariant.Add(new Move(24, 18));   // ToPt positive — hit-less form
         noHitVariant.Add(new Move(13, 9));    // 13/9 with the 4
 
-        Assert.True(MoveGenerator.IsLegalPlay(state, noHitVariant, 6, 4));
+        Assert.False(MoveGenerator.IsLegalPlay(state, noHitVariant, 6, 4));
+
+        // The correctly-encoded hit form is, of course, legal.
+        var hitVariant = new Play();
+        hitVariant.Add(new Move(24, -18));
+        hitVariant.Add(new Move(13, 9));
+
+        Assert.True(MoveGenerator.IsLegalPlay(state, hitVariant, 6, 4));
+    }
+
+    [Fact]
+    public void DecomposedEntry_MatchesCombinedCandidate()
+    {
+        // The quiz-entry repro that motivated canonical equality: a play entered
+        // as decomposed hops must match the candidate list regardless of which
+        // encoding the generator kept and which intermediate the entry routed
+        // through. From Standard with 3-2, 13/8 is legal with both intermediates
+        // (10 and 11) open; the generator emits exactly one encoding. Under the
+        // old raw-hop DeduplicationKey, whichever decomposition the generator
+        // did not keep failed to match — now all encodings of 13/8 are one play.
+        var state = BoardState.Standard();
+
+        var viaTen = new Play();
+        viaTen.Add(new Move(13, 10));   // big die first
+        viaTen.Add(new Move(10, 8));
+
+        var viaEleven = new Play();
+        viaEleven.Add(new Move(13, 11)); // small die first
+        viaEleven.Add(new Move(11, 8));
+
+        var combined = new Play();
+        combined.Add(new Move(13, 8));   // the analyzer-style collapsed form
+
+        Assert.True(MoveGenerator.IsLegalPlay(state, viaTen, 3, 2));
+        Assert.True(MoveGenerator.IsLegalPlay(state, viaEleven, 3, 2));
+        Assert.True(MoveGenerator.IsLegalPlay(state, combined, 3, 2));
+    }
+
+    [Theory]
+    // Standard opening — all 21 rolls
+    [InlineData(1, 1)]
+    [InlineData(1, 2)]
+    [InlineData(1, 3)]
+    [InlineData(1, 4)]
+    [InlineData(1, 5)]
+    [InlineData(1, 6)]
+    [InlineData(2, 2)]
+    [InlineData(2, 3)]
+    [InlineData(2, 4)]
+    [InlineData(2, 5)]
+    [InlineData(2, 6)]
+    [InlineData(3, 3)]
+    [InlineData(3, 4)]
+    [InlineData(3, 5)]
+    [InlineData(3, 6)]
+    [InlineData(4, 4)]
+    [InlineData(4, 5)]
+    [InlineData(4, 6)]
+    [InlineData(5, 5)]
+    [InlineData(5, 6)]
+    [InlineData(6, 6)]
+    public void GeneratePlays_CandidatesAreCanonicallyDistinct(int die1, int die2)
+    {
+        // The generator dedups candidates by final board state, and equal
+        // canonical forms reach equal final states — so the candidate list must
+        // already be duplicate-free under canonical Play equality. This pins
+        // that alignment: if generation ever emitted two encodings of one play,
+        // consumers keying on Play equality (quiz scoring, IsLegalPlay) would
+        // see a double candidate.
+        var state = BoardState.Standard();
+        var plays = MoveGenerator.GeneratePlays(state, die1, die2);
+
+        for (int i = 0; i < plays.Count; i++)
+            for (int j = i + 1; j < plays.Count; j++)
+                Assert.False(plays[i] == plays[j],
+                    $"Candidates {i} {Raw(plays[i])} and {j} {Raw(plays[j])} " +
+                    $"are canonically equal for {die1}-{die2}.");
+    }
+
+    private static string Raw(Play p)
+    {
+        var parts = new List<string>(p.Count);
+        for (int i = 0; i < p.Count; i++)
+            parts.Add($"({p[i].FrPt},{p[i].ToPt})");
+        return "{" + string.Join(" ", parts) + "}";
+    }
+
+    [Fact]
+    public void GeneratePlays_TwoBarEntries_SingleCandidate()
+    {
+        // Two checkers on the bar, both entry points open, non-doubles: the
+        // only legal play enters both — one play, whichever die goes first.
+        // The bigDie-first bar branch re-derived it move-for-move in the other
+        // order, so without the same-source skip this was a double candidate.
+        var state = new BoardState();
+        state.Points[25] = 2;
+        state.Points[13] = 5;
+        state.Points[19] = -2;
+        state.Points[24] = -2;
+        state.RecalcHighPoint();
+
+        var plays = MoveGenerator.GeneratePlays(state, 2, 3);
+
+        var expected = new Play();
+        expected.Add(new Move(25, 23));
+        expected.Add(new Move(25, 22));
+
+        var only = Assert.Single(plays);
+        Assert.Equal(expected, only);
+    }
+
+    [Fact]
+    public void GeneratePlays_SamePointBearOffPair_SingleCandidate()
+    {
+        // Two checkers on the 2-point (nothing else), dice 2-5: the exact
+        // bear-off (die 2) and the overshoot bear-off (die 5) both encode as
+        // (2, 0), so the play is the same in either die order. The bigDie-first
+        // pass re-derived it — without the same-source skip, a double candidate.
+        var state = new BoardState();
+        state.Points[2] = 2;
+        state.RecalcHighPoint();
+
+        var plays = MoveGenerator.GeneratePlays(state, 2, 5);
+
+        var expected = new Play();
+        expected.Add(new Move(2, 0));
+        expected.Add(new Move(2, 0));
+
+        var only = Assert.Single(plays);
+        Assert.Equal(expected, only);
     }
 }
 
@@ -693,6 +823,102 @@ public class ApplyPlayValidatingTests
 
         Assert.Equal(snapshotPoints, state.Points);
         Assert.Equal(snapshotHigh, state.HighPointOccupied);
+    }
+
+    [Fact]
+    public void HitlessEncodingOfHittingPlay_Throws_AndCannotCorruptBoard()
+    {
+        // Closes the booked silent-corruption hazard. Under the old hit-blind
+        // DeduplicationKey, this hit-less encoding of the forced hit 24/18*
+        // validated as legal and then applied verbatim — moving onto the blot
+        // without sending it to the bar (the blot was annihilated in place).
+        // Hit-sensitive canonical equality rejects the encoding outright, and
+        // throw-before-mutate leaves the board (blot included) untouched.
+        var state = new BoardState();
+        state.Points[24] = 2;
+        state.Points[13] = 5;
+        state.Points[6] = 5;
+        state.Points[8] = 3;
+        state.Points[18] = -1;   // opponent blot — a 6 from 24 must hit it
+        state.Points[1] = -2;
+        state.Points[12] = -5;
+        state.Points[17] = -2;
+        state.Points[19] = -5;
+        state.RecalcHighPoint();
+
+        int[] snapshotPoints = (int[])state.Points.Clone();
+
+        var noHitVariant = new Play();
+        noHitVariant.Add(new Move(24, 18));   // hit-less form of the hitting play
+        noHitVariant.Add(new Move(13, 9));
+
+        Assert.Throws<ArgumentException>(
+            () => MoveGenerator.ApplyPlay(state, noHitVariant, 6, 4));
+
+        Assert.Equal(snapshotPoints, state.Points);
+        Assert.Equal(-1, state.Points[18]);   // blot still on the board
+    }
+
+    [Fact]
+    public void DecomposedEncoding_AppliesTheMatchedCandidate_SameFinalState()
+    {
+        // ApplyPlay applies the generator's encoding of the matched play, not
+        // the caller's hops. For an ordinary open-board decomposition the two
+        // are interchangeable — the final state must equal that of the
+        // generator's own candidate applied directly.
+        var state = BoardState.Standard();
+
+        var decomposed = new Play();
+        decomposed.Add(new Move(13, 10));
+        decomposed.Add(new Move(10, 8));
+
+        var legal = MoveGenerator.GeneratePlays(BoardState.Standard(), 3, 2);
+        var candidate = legal.Single(p => p == decomposed);
+
+        var direct = BoardState.Standard();
+        direct.ApplyPlay(candidate);
+
+        MoveGenerator.ApplyPlay(state, decomposed, 3, 2);
+
+        for (int i = 0; i <= 25; i++)
+            Assert.Equal(direct.Points[i], state.Points[i]);
+        Assert.Equal(direct.HighPointOccupied, state.HighPointOccupied);
+    }
+
+    [Fact]
+    public void DecomposedEncoding_ThroughBlockedIntermediate_AppliesSafely()
+    {
+        // The sharp edge of canonical equality: it is deliberately insensitive
+        // to which intermediate a trajectory touches, so a caller's decomposition
+        // can name a blocked point even though the play itself (13/8 with 3-2,
+        // legal via the open 11) is fine. Applying the caller's hops verbatim
+        // would land a checker on the opponent's 10-point anchor and corrupt the
+        // board; applying the matched candidate's encoding realizes the play
+        // safely. Pins the canonicalize-then-apply contract.
+        var state = new BoardState();
+        state.Points[13] = 2;
+        state.Points[6] = 2;
+        state.Points[10] = -2;   // opponent anchor — blocks the 13/10 route
+        state.Points[20] = -2;
+        state.RecalcHighPoint();
+
+        var decomposed = new Play();
+        decomposed.Add(new Move(13, 10));   // routes through the blocked point
+        decomposed.Add(new Move(10, 8));
+
+        Assert.True(MoveGenerator.IsLegalPlay(state, decomposed, 3, 2));
+
+        var legal = MoveGenerator.GeneratePlays(state, 3, 2);
+        var candidate = legal.Single(p => p == decomposed);
+
+        var direct = state.Copy();
+        direct.ApplyPlay(candidate);
+
+        MoveGenerator.ApplyPlay(state, decomposed, 3, 2);
+
+        for (int i = 0; i <= 25; i++)
+            Assert.Equal(direct.Points[i], state.Points[i]);
+        Assert.Equal(direct.HighPointOccupied, state.HighPointOccupied);
     }
 
     [Fact]

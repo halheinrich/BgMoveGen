@@ -55,8 +55,8 @@ public enum ClickOutcome
 /// resulting board state identifies a unique generated play (the generator dedups by
 /// final state), and <see cref="CompletedPlay"/> is set to <i>that</i> canonical play.
 /// Two different intermediate paths to the same final state therefore yield a
-/// <see cref="CompletedPlay"/> that compares equal under <see cref="Play.Equals(Play)"/> /
-/// <see cref="Play.DeduplicationKey"/>; paths that reach genuinely different states
+/// <see cref="CompletedPlay"/> that compares equal under
+/// <see cref="Play.Equals(Play)"/>; paths that reach genuinely different states
 /// (e.g. one hits an intermediate blot, the other does not) stay distinct.
 ///
 /// Pass positions (no legal play): <see cref="IsComplete"/> is true at construction

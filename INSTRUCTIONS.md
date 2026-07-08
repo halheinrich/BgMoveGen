@@ -86,13 +86,19 @@ Two passes iterating `FrPt` from rearmost down:
   `FrPt`, use `smallDie` for the first move and `bigDie` for the second
   (with `FrPt2 <= FrPt1`).
 - **Pass 2 (bigDie first):** at each `FrPt`, use `bigDie` first and
-  `smallDie` second. Skip same-checker plays where (a) both intermediates
-  are on-board, (b) the smallDie intermediate is unblocked, and (c) neither
-  intermediate has an opponent blot — those are exact duplicates of Pass 1.
+  `smallDie` second. Two duplicate shapes are skipped. *Same-checker* plays
+  where (a) both intermediates are on-board, (b) the smallDie intermediate
+  is unblocked, and (c) neither intermediate has an opponent blot — those
+  are exact duplicates of Pass 1. *Same-source-point* plays (the smallDie
+  move leaves the same point the bigDie move just left — including two bar
+  entries) — Pass 1 already emitted that pair in the other order, and the
+  orders are always interchangeable: the destinations differ, so neither
+  move affects the other's legality.
 
-Two-different-checker plays are never duplicated because the `FrPt` ordering
-constraint is symmetric — the same pair appears the same way in both passes.
-Both passes enforce must-use-both-dice and must-use-larger-die.
+Two-checker plays from *different* points are never duplicated because the
+`FrPt` ordering constraint is symmetric — the same pair appears the same way
+in both passes. Both passes enforce must-use-both-dice and
+must-use-larger-die.
 
 ### NextMove iterator
 
@@ -108,18 +114,25 @@ again (same-checker continuation).
 ### Validating turn-boundary apply
 
 `MoveGenerator.ApplyPlay(state, play, die1, die2)` is the validating wrapper
-around `BoardState.ApplyPlay`: it re-runs `GeneratePlays` and checks the
-input play's `DeduplicationKey` against the legal set, throwing
-`ArgumentException` on mismatch. The contract is **throw-before-mutate**:
-on an illegal play, `state` is left byte-for-byte unchanged so callers can
-recover without a defensive clone.
+around `BoardState.ApplyPlay`: it re-runs `GeneratePlays` and matches the
+input against the legal set by canonical `Play` equality (order- and
+decomposition-insensitive, hit-sensitive — see BgDataTypes_Lib's
+`CanonicalPlay`), throwing `ArgumentException` on mismatch. On a match it
+applies the **generator's encoding of the matched play, not the caller's
+move sequence** — canonical equality deliberately ignores which intermediate
+points a trajectory touches, so a caller's decomposition of a legal play may
+route through a blocked point or an unacknowledged blot; the generator's
+encoding is mechanically sound by construction and reaches the identical
+final state. The contract is **throw-before-mutate**: on an illegal play,
+`state` is left byte-for-byte unchanged so callers can recover without a
+defensive clone.
 
 `MoveGenerator.IsLegalPlay(state, play, die1, die2)` is the standalone
-predicate used by the wrapper; both are the simple-correct re-enumeration
-implementation. Not hot-path — callers running tight loops should drive
-`GeneratePlays` directly. The unvalidated turn-boundary primitive
-(`state.ApplyPlay(play)`) remains available for callers that have already
-proven legality.
+predicate over the same match rule (a shared `TryFindLegal` helper); both
+are the simple-correct re-enumeration implementation. Not hot-path —
+callers running tight loops should drive `GeneratePlays` directly. The
+unvalidated turn-boundary primitive (`state.ApplyPlay(play)`) remains
+available for callers that have already proven legality.
 
 ### MoveEntryState — state-based click legality
 
@@ -145,10 +158,10 @@ is accepted iff:
 On completion the resulting board state identifies a unique generated play
 (the generator dedups by final state), and `CompletedPlay` is set to *that*
 canonical play — not the literal clicked moves. Two intermediate paths to the
-same final state therefore yield a `CompletedPlay` equal under
-`Play.Equals` / `DeduplicationKey` (so quiz scoring and `allPlays.Contains`
-match regardless of path); paths that reach genuinely different states (one
-hits an intermediate blot, the other doesn't) stay distinct.
+same final state therefore yield a `CompletedPlay` equal under `Play.Equals`
+(so quiz scoring and `allPlays.Contains` match regardless of path); paths
+that reach genuinely different states (one hits an intermediate blot, the
+other doesn't) stay distinct.
 
 Dice bookkeeping: `_turnDice` (length = play length) is the multiset played
 this turn; `_remainingDice` tracks what's unconsumed, and each committed move
@@ -216,7 +229,9 @@ pip-floor retry loop). BgMoveGen exposes it through the
   correctness; `GenerateStates` / `EnumerateStates` API; `IsLegalPlay` /
   `ApplyPlay` validation contract (legality round-trip, illegal-input
   throw, throw-before-mutate state preservation, dice-order invariance,
-  closed-out empty-pass case); performance benchmarks; interop (successor
+  closed-out empty-pass case, hit-sensitive rejection of mis-encoded hits,
+  decomposed-encoding acceptance, canonicalize-then-apply, candidate-list
+  canonical distinctness); performance benchmarks; interop (successor
   count, flip correctness, off-count tracking, checker conservation, pass
   detection, Bg960 conservation and seed reproducibility); MoveEntryState
   click-by-click assembly.
@@ -249,10 +264,12 @@ must-use-both-dice and must-use-larger-die. A pass is represented as a
 single successor identical to the input board (flipped by the interop
 layer).
 
-`IsLegalPlay` matches by `Play.DeduplicationKey()` — order- and
-hit-invariant. `ApplyPlay` is the validating wrapper around
-`BoardState.ApplyPlay`; on rejection, the input state is unchanged.
-The unvalidated form (`state.ApplyPlay(play)`) remains available.
+`IsLegalPlay` matches by canonical `Play` equality — order- and
+decomposition-insensitive, hit-sensitive. `ApplyPlay` is the validating
+wrapper around `BoardState.ApplyPlay`; on a match it applies the generator's
+encoding of the matched play (see Architecture); on rejection, the input
+state is unchanged. The unvalidated form (`state.ApplyPlay(play)`) remains
+available.
 
 Apply/undo at the move level are instance methods on `BoardState`
 (defined in BgDataTypes_Lib): `state.ApplyMove(move)` /
@@ -328,7 +345,10 @@ int get_version();
 - **Same-checker dedup (non-doubles).** Different die orderings for the
   same checker produce the same board state when neither intermediate has
   a blot and both intermediates are reachable. Handled by the Pass 2
-  avoidance check — three conditions, all three must hold to skip.
+  avoidance check — three conditions, all three must hold to skip. Distinct
+  from the *same-source-point* skip (two checkers leaving one point, or two
+  bar entries), which is unconditional — those orderings are always
+  interchangeable.
 - **Mirror conflicts in Bg960 validation.** Point `i` and point `25 - i`
   can never both be made by the player. The constraint lives inside
   `BoardState.Bg960` (BgDataTypes_Lib); BgMoveGen consumes the result.
@@ -345,19 +365,23 @@ int get_version();
 - **`MoveEntryState` legality is state-based, not move-list-based.** Do not
   "fix" entry by making `GeneratePlays` emit both die orderings of a combined
   move — the distinct-outcome dedup is correct and RL state enumeration,
-  equity, and quiz `DeduplicationKey` scoring all depend on it. Entry instead
+  equity, and quiz `Play`-equality scoring all depend on it. Entry instead
   accepts any click that is a legal single move from the current state *and*
   keeps a generated final state reachable, then canonicalizes the completed
   `Play` by resulting board state. A click can be legal even though its move
   appears in no emitted play (e.g. `8/5` then `5/4`, since `8/4` is emitted as
   `8/7/4`). See the MoveEntryState architecture section.
-- **`Play` equivalence is hit-invariant.** `IsLegalPlay` matches by
-  `DeduplicationKey`, which collapses hit and non-hit forms of the same
-  `(FrPt, |ToPt|)` multiset. A play that lists `Move(24, 18)` will round-
-  trip true even when the only legal form is the hit `Move(24, -18)`.
-  This is intentional — the dedup contract is order- and hit-invariant —
-  but consumers wanting hit-sensitive equivalence must compare moves
-  directly, not via `IsLegalPlay`.
+- **`Play` equivalence is notation-level: decomposition-insensitive but
+  hit-sensitive.** `IsLegalPlay` matches by canonical `Play` equality
+  (BgDataTypes_Lib's `CanonicalPlay`): `{13/10, 10/8}` equals `{13/8}` —
+  intermediate touch-down points are not part of a play's identity — but
+  a hit-less `Move(24, 18)` is *not* the hitting `Move(24, -18)`, so a
+  mis-encoded hit is rejected rather than validated (the old hit-blind
+  key let it apply without barring the blot — silent board corruption).
+  The flip side of intermediate-insensitivity: a caller's decomposition
+  may name a blocked or blot-occupied point yet still be the legal play,
+  which is why `ApplyPlay` applies the matched candidate's encoding, never
+  the caller's hops.
 
 ## Subproject-internal next steps
 

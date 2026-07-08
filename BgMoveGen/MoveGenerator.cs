@@ -192,8 +192,11 @@ public static class MoveGenerator
     /// <summary>
     /// Generate all legal plays for a non-doubles roll.
     /// Two passes: smallDie first (all plays kept), then bigDie first (skip
-    /// same-checker duplicates where the smallDie-first path is also legal
-    /// and produces the same board state).
+    /// duplicates of pass-1 plays). Two duplicate shapes are avoided:
+    /// same-checker plays where the smallDie-first path is also legal and
+    /// produces the same board state, and same-source-point plays (two
+    /// checkers leaving one point — including two bar entries), which pass 2
+    /// would re-emit move-for-move in the other order.
     /// Enforces must-use-both-dice and must-use-larger-die rules.
     /// </summary>
     internal static List<Play> GenerateNonDoubles(BoardState state, int die1, int die2)
@@ -235,6 +238,15 @@ public static class MoveGenerator
                 int fr2 = 26;
                 while (NextMove(state, smallDie, fr2, out Move m2))
                 {
+                    if (m2.FrPt == 25)
+                    {
+                        // Both dice enter from the bar: (enter big, enter small)
+                        // is the small-first branch's pair in the other order —
+                        // the entry points differ, so neither entry affects the
+                        // other and both orders reach the same state. Skip.
+                        fr2 = m2.FrPt;
+                        continue;
+                    }
                     int m1Land = m1.ToPt > 0 ? m1.ToPt : -m1.ToPt;
                     if (m2.FrPt == m1Land)
                     {
@@ -304,6 +316,18 @@ public static class MoveGenerator
                     int fr2 = frPt1 + 1; // allow same point
                     while (NextMove(state, smallDie, fr2, out Move m2))
                     {
+                        if (m2.FrPt == frPt1)
+                        {
+                            // Two checkers leave the same point: (big from P,
+                            // small from P) is pass 1's (small from P, big from P)
+                            // in the other order. The destinations differ, so
+                            // neither move affects the other's legality (the
+                            // point stays occupied, so bear-off eligibility and
+                            // HighPointOccupied are unchanged) — both orders are
+                            // legal together and reach the same state. Skip.
+                            fr2 = m2.FrPt;
+                            continue;
+                        }
                         int m1Land = m1.Value.ToPt > 0 ? m1.Value.ToPt : -m1.Value.ToPt;
                         if (m2.FrPt == m1Land)
                         {
@@ -493,8 +517,9 @@ public static class MoveGenerator
     /// <summary>
     /// True iff <paramref name="play"/> is among the legal plays for
     /// <paramref name="state"/> with dice <paramref name="die1"/>, <paramref name="die2"/>.
-    /// Equivalence is by <see cref="Play.DeduplicationKey"/> — order-invariant
-    /// and hit-invariant (matching the move-generation dedup contract).
+    /// Equivalence is <see cref="Play"/> equality — canonical (notation-level):
+    /// insensitive to move order and to how a trajectory is decomposed into
+    /// hops, fully sensitive to hits (see <see cref="CanonicalPlay"/>).
     ///
     /// <para>
     /// Implementation re-runs <see cref="GeneratePlays"/>; this is the simple
@@ -503,20 +528,25 @@ public static class MoveGenerator
     /// </para>
     /// </summary>
     public static bool IsLegalPlay(BoardState state, Play play, int die1, int die2)
-    {
-        var legal = GeneratePlays(state, die1, die2);
-        var key = play.DeduplicationKey();
-        foreach (var p in legal)
-            if (p.DeduplicationKey() == key)
-                return true;
-        return false;
-    }
+        => TryFindLegal(state, play, die1, die2, out _);
 
     /// <summary>
     /// Validating turn-boundary apply: throws <see cref="ArgumentException"/> if
     /// <paramref name="play"/> is not legal for <paramref name="state"/> with
     /// <paramref name="die1"/>, <paramref name="die2"/>; otherwise delegates to
     /// <see cref="BoardState.ApplyPlay"/> (apply-all + flip).
+    ///
+    /// <para>
+    /// <b>What is applied is the generator's encoding of the matched play, not
+    /// the caller's move sequence.</b> Legality is canonical (notation-level)
+    /// equality, which is deliberately insensitive to the intermediate points a
+    /// trajectory touches — so the caller's decomposition of a legal play may
+    /// route through a point that is blocked or holds an unacknowledged blot,
+    /// and applying those hops verbatim would corrupt the board. The generator's
+    /// encoding of the same play is mechanically sound by construction and
+    /// produces the identical final state (equal canonical forms move the same
+    /// checkers to the same destinations with the same hits).
+    /// </para>
     ///
     /// <para>
     /// On rejection, <paramref name="state"/> is unchanged — validation runs
@@ -527,11 +557,36 @@ public static class MoveGenerator
     /// </summary>
     public static void ApplyPlay(BoardState state, Play play, int die1, int die2)
     {
-        if (!IsLegalPlay(state, play, die1, die2))
+        if (!TryFindLegal(state, play, die1, die2, out Play matched))
             throw new ArgumentException(
                 $"Play is not legal for the given state and dice ({die1}, {die2}).",
                 nameof(play));
-        state.ApplyPlay(play);
+        state.ApplyPlay(matched);
+    }
+
+    /// <summary>
+    /// The single legality-match rule for <see cref="IsLegalPlay"/> and
+    /// <see cref="ApplyPlay"/>: re-enumerate the legal plays and find the one
+    /// canonically equal to <paramref name="play"/>. <paramref name="matched"/>
+    /// is the generator's own encoding of that play — the safe form to apply.
+    /// The generator dedups candidates by final board state, and equal canonical
+    /// forms reach equal states, so at most one candidate can match.
+    /// </summary>
+    private static bool TryFindLegal(
+        BoardState state, Play play, int die1, int die2, out Play matched)
+    {
+        var legal = GeneratePlays(state, die1, die2);
+        var canonical = play.ToCanonical();
+        foreach (var p in legal)
+        {
+            if (p.ToCanonical() == canonical)
+            {
+                matched = p;
+                return true;
+            }
+        }
+        matched = default;
+        return false;
     }
 
     // ── Reference implementation (brute-force, obviously correct) ──

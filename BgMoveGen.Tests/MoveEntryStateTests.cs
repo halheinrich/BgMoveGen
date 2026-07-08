@@ -926,11 +926,9 @@ public class MoveEntryStateTests
         Assert.Equal(2, entry.Current.Points[8]); // 3 - 1
         Assert.Equal(4, entry.Current.Points[6]); // 5 - 1
 
+        // Canonical Play equality identifies the same play regardless of click path.
         var allPlays = MoveGenerator.GeneratePlays(initial, 3, 1);
         Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
-        // Dedup-key identifies the same canonical play regardless of click path.
-        Assert.Contains(allPlays,
-            p => p.DeduplicationKey() == entry.CompletedPlay!.Value.DeduplicationKey());
     }
 
     [Fact]
@@ -1139,8 +1137,7 @@ public class MoveEntryStateTests
         Assert.Equal(-1, entry.Current.Points[0]); // opponent blot sent to the bar
 
         var allPlays = MoveGenerator.GeneratePlays(s, 6, 2);
-        Assert.Contains(allPlays,
-            p => p.DeduplicationKey() == entry.CompletedPlay!.Value.DeduplicationKey());
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
     }
 
     [Fact]
@@ -1157,8 +1154,7 @@ public class MoveEntryStateTests
         Assert.Equal(0, entry.Current.Points[0]);  // nothing hit
 
         var allPlays = MoveGenerator.GeneratePlays(s, 6, 2);
-        Assert.Contains(allPlays,
-            p => p.DeduplicationKey() == entry.CompletedPlay!.Value.DeduplicationKey());
+        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
     }
 
     [Fact]
