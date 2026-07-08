@@ -18,9 +18,11 @@ https://github.com/halheinrich/BgMoveGen — branch `main`.
 
 ## Depends on
 
-`BgDataTypes_Lib` — for `Move`, `Play`, and `BoardState`. The shared-data
-layer owns the move primitives and the mutable board representation;
-BgMoveGen contributes the move-generation algorithms over them. The split
+`BgDataTypes_Lib` — for `Move`, `Play` (and its canonical chain form,
+`CanonicalPlay` / `PlayChain`), and `BoardState`. The shared-data
+layer owns the move primitives, play equivalence, and the mutable board
+representation; BgMoveGen contributes the move-generation algorithms over
+them. The split
 keeps the data shape reusable from non-move-gen consumers (game substrate,
 diagram rendering, filters) without dragging them through this library.
 
@@ -285,12 +287,14 @@ string notation = MoveNotationFormatter.Format(play);
 // Examples: "8/5(2)", "bar/22", "24/18*", "6/off", "21/14", "6/2(2)*".
 ```
 
-Handles bar entry (`FrPt == 25` → "bar"), bear off (`ToPt == 0` → "off"),
-hits (`ToPt < 0` → "*" suffix), doubles (chains sharing `(from, to)`
-collapse to "(n)" — the "*" follows the count, "(n)*", and is applied if
-**any** constituent chain hit), and same-checker chain collapse across
-multiple legs. Chain matching is bidirectional — legs emitted in either
-time order collapse the same way.
+Renders from the play's canonical chain form (`Play.ToCanonical()`):
+BgDataTypes_Lib's `CanonicalPlay` owns the chain-collapse semantics — hop
+fusing, hit-visibility splitting, order/decomposition insensitivity,
+deterministic chain ordering. The formatter owns display only: bar entry
+(`FrPt == 25` → "bar"), bear off (`ToPt == 0` → "off"), hits (`ToPt < 0` →
+"*" suffix), and duplicate-chain grouping — adjacent chains sharing
+`(from, |to|)` collapse to "(n)", with the "*" following the count
+("(n)*") and applied if **any** constituent chain hit.
 
 ### Managed — `MoveEntryState`
 

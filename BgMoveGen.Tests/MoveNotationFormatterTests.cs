@@ -3,6 +3,14 @@ using BgDataTypes_Lib;
 
 namespace BgMoveGen.Tests;
 
+/// <summary>
+/// Rendering pins only. Chain-collapse semantics (hop fusing, hit-visibility
+/// splitting, order/decomposition insensitivity, canonical ordering) are
+/// owned and tested by BgDataTypes_Lib (<c>CanonicalPlayTests</c>); tests
+/// here pin what the formatter itself owns — labels ("bar"/"off"), the "*"
+/// suffix, "(n)" run-grouping with the OR-aggregated group star, and the
+/// rendered output shape of representative canonical forms.
+/// </summary>
 public class MoveNotationFormatterTests
 {
     private static Play MakePlay(params Move[] moves)
@@ -143,15 +151,15 @@ public class MoveNotationFormatterTests
     }
 
     [Fact]
-    public void Format_OutOfOrderLegs_HitOnLaterLegPreventsBackwardExtension()
+    public void Format_IntermediateHitInTrajectory_RendersSplitChains()
     {
-        // Hypothetical out-of-order input: (20, 14) then (21, -20). The hit
-        // on 20 is an intermediate-point hit of the notional chain 21→20*→14,
-        // so the legs must not collapse (otherwise the "*" is lost). Output
-        // then sorts by from-pt desc: 21 > 20.
-        var result = MoveNotationFormatter.Format(
-            MakePlay(new Move(20, 14), new Move(21, -20)));
-        Assert.Equal("21/20* 20/14", result);
+        // A three-leg trajectory hitting at the middle point: 13/11 11/9* 9/7.
+        // Canonicalization splits at the hit (the "*" at 9 must stay visible),
+        // so the play renders as two chains — collapsed prefix, then the
+        // continuation.
+        var result = MoveNotationFormatter.Format(MakePlay(
+            new Move(13, 11), new Move(11, -9), new Move(9, 7)));
+        Assert.Equal("13/9* 9/7", result);
     }
 
     // Doubles --------------------------------------------------------------
@@ -215,11 +223,11 @@ public class MoveNotationFormatterTests
     }
 
     [Fact]
-    public void Format_SameCheckerChainOutOfOrder_CollapsesVia21Slash14BugFix()
+    public void Format_SameCheckerChainOutOfOrder_CollapsesSame()
     {
-        // The 21/14 bug: XG emits (20, 14) before (21, 20). Forward-only
-        // matching produced "20/14 21/20"; bidirectional matching extends
-        // the chain's start backward to produce "21/14".
+        // The 21/14 case: XG emits (20, 14) before (21, 20). Order
+        // insensitivity is canonicalization's job now (producer-owned and
+        // producer-tested); this pins that rendering inherits it.
         var result = MoveNotationFormatter.Format(
             MakePlay(new Move(20, 14), new Move(21, 20)));
         Assert.Equal("21/14", result);
@@ -242,36 +250,14 @@ public class MoveNotationFormatterTests
     }
 
     [Fact]
-    public void Format_ChainThenBearOff_OutOfOrder_StillCompresses()
+    public void Format_TwoIdenticalChains_Group()
     {
-        // (1, off) emitted first, then (4, 1) — backward extend the bear-off
-        // chain. Start becomes 4; end stays at off.
-        var result = MoveNotationFormatter.Format(
-            MakePlay(new Move(1, 0), new Move(4, 1)));
-        Assert.Equal("4/off", result);
-    }
-
-    [Fact]
-    public void Format_TwoIdenticalChains_GroupAfterMerge()
-    {
-        // Two checkers each chain 24→20→16.
+        // Two checkers each chain 24→20→16 — the collapsed chains are
+        // identical and group as "(2)".
         var result = MoveNotationFormatter.Format(MakePlay(
             new Move(24, 20), new Move(20, 16),
             new Move(24, 20), new Move(20, 16)));
         Assert.Equal("24/16(2)", result);
-    }
-
-    [Fact]
-    public void Format_InterleavedDoublesChains_GroupAcrossInterleave()
-    {
-        // Doubles where XG emits the starts together then the continuations
-        // together: (20,14)(20,14)(14,8)(14,8). Each (14,8) extends one of
-        // the earlier open chains forward, yielding two identical (20,8)
-        // chains that group as "20/8(2)".
-        var result = MoveNotationFormatter.Format(MakePlay(
-            new Move(20, 14), new Move(20, 14),
-            new Move(14, 8),  new Move(14, 8)));
-        Assert.Equal("20/8(2)", result);
     }
 
     [Fact]
@@ -281,64 +267,6 @@ public class MoveNotationFormatterTests
         var result = MoveNotationFormatter.Format(MakePlay(
             new Move(24, 21), new Move(13, 8), new Move(21, 15)));
         Assert.Equal("24/15 13/8", result);
-    }
-
-    // Chain-to-chain merge (out-of-order legs leave two chains adjacent) --------
-
-    [Fact]
-    public void Format_OutOfOrderLegs_MergesTwoExistingChains()
-    {
-        // The match_40930593.xg case. A doubles checker runs 13→11→9→7 plus a
-        // separate 8→6, with legs emitted non-canonically: (13,11)(9,7)(11,9)(8,6).
-        // (11,9) extends 13/11 forward to 13/9, leaving 13/9 and 9/7 adjacent at 9.
-        // Matching a leg against a chain never rejoins two chains, so without the
-        // fixpoint merge this rendered "13/9 9/7 8/6". It must collapse to 13/7.
-        var result = MoveNotationFormatter.Format(MakePlay(
-            new Move(13, 11), new Move(9, 7), new Move(11, 9), new Move(8, 6)));
-        Assert.Equal("13/7 8/6", result);
-    }
-
-    [Theory]
-    // Forward in order.
-    [InlineData(13, 11, 11, 9, 9, 7)]
-    // Backward (starts last): the 13→11 leg arrives after its continuations.
-    [InlineData(11, 9, 9, 7, 13, 11)]
-    // Middle leg last: the two ends arrive first, then the connector.
-    [InlineData(13, 11, 9, 7, 11, 9)]
-    // Fully reversed.
-    [InlineData(9, 7, 11, 9, 13, 11)]
-    public void Format_SingleCheckerChain_AnyLegOrder_RendersSameCollapse(
-        int f0, int t0, int f1, int t1, int f2, int t2)
-    {
-        // Every permutation of the 13→11→9→7 legs must render "13/7" — order
-        // independence across forward match, backward match, and chain merge.
-        var result = MoveNotationFormatter.Format(MakePlay(
-            new Move(f0, t0), new Move(f1, t1), new Move(f2, t2)));
-        Assert.Equal("13/7", result);
-    }
-
-    [Fact]
-    public void Format_ChainMerge_HitAtJoinPoint_StaysSplit()
-    {
-        // Same adjacency, but the leg into the join point 9 is a hit: the notional
-        // chain is 13→11→9*→7, so the "*" at the intermediate 9 must stay visible.
-        // Legs (13,11)(9,7)(11,-9): (11,-9) forward-extends 13/11 to 13/9*, which is
-        // adjacent to 9/7 — but the left segment hits at the join, so it must NOT
-        // merge. Sorted from-pt desc: 13 > 9.
-        var result = MoveNotationFormatter.Format(MakePlay(
-            new Move(13, 11), new Move(9, 7), new Move(11, -9)));
-        Assert.Equal("13/9* 9/7", result);
-    }
-
-    [Fact]
-    public void Format_ChainMerge_HitAtChainEndpoint_MergesAndKeepsAsterisk()
-    {
-        // The hit is at the FINAL point (7), not the join (9): chain 13→11→9 is
-        // hit-free at the join and fuses with 9→7*, the "*" landing on the endpoint.
-        // Legs (13,11)(9,-7)(11,9) → 13/7*.
-        var result = MoveNotationFormatter.Format(MakePlay(
-            new Move(13, 11), new Move(9, -7), new Move(11, 9)));
-        Assert.Equal("13/7*", result);
     }
 
     // Edge cases -----------------------------------------------------------
