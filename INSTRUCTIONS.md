@@ -33,6 +33,7 @@ that arrow points outward — BgMoveGen knows nothing about it.
 
 ```
 BgMoveGen.slnx
+Directory.Packages.props
 BgMoveGen/
   BgMoveGen.csproj
   MoveGenerator.cs       — public: GeneratePlays / GenerateStates /
