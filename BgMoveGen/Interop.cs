@@ -15,7 +15,7 @@ namespace BgMoveGen;
 ///     instance; multiple Python processes are fully safe. If multi-thread use
 ///     ever needed, change _state to [ThreadStatic].
 /// </summary>
-public static unsafe class Interop
+internal static unsafe class Interop
 {
     /// <summary>
     /// Safe upper bound on successors for any position.

@@ -36,17 +36,18 @@ BgMoveGen.slnx
 Directory.Packages.props
 BgMoveGen/
   BgMoveGen.csproj
-  MoveGenerator.cs       — public: GeneratePlays / GenerateStates /
-                           EnumerateStates / IsLegalPlay / ApplyPlay.
-                           Internal helpers: NextMove / SingleMoves
-                           (Span and List overloads) / GenerateDoubles /
-                           GenerateNonDoubles / Reference_GeneratePlays
+  MoveGenerator.cs       — public: GeneratePlays / IsLegalPlay / ApplyPlay.
+                           Internal: GenerateStates / EnumerateStates
+                           (RL-successor wrappers, own-tests-only) /
+                           NextMove / SingleMoves (Span and List overloads) /
+                           GenerateDoubles / GenerateNonDoubles /
+                           Reference_GeneratePlays
   MoveNotationFormatter.cs — Play → standard notation ("8/5(2)", "24/18*")
   MoveEntryState.cs      — stateful one-click Play assembly;
                            ClickOutcome enum (Illegal / MoveCommitted /
                            PlayCompleted)
-  Interop.cs             — NativeAOT exports + internal blittable
-                           BgBoardState
+  Interop.cs             — internal NativeAOT export surface (whole class
+                           is internal) + blittable BgBoardState
 BgMoveGen.Tests/
   BgMoveGen.Tests.csproj
   MoveGeneratorTests.cs
@@ -192,14 +193,17 @@ reverse `points`, swap bars, swap off counts) so the next call is already
 oriented correctly. `get_starting_position` does **not** flip — output is
 from the on-roll player's perspective.
 
-`BgBoardState` is an `internal` nested struct of the public `Interop`
-class (`Interop.BgBoardState`); it exists only to marshal across the
-native boundary and is distinct from `BgDataTypes_Lib.BoardState`. The
-marshaller (`FromExternal` / `ToExternalFlipped` / `ToExternal`)
+`Interop` is an `internal static` class; `BgBoardState` is an `internal`
+nested struct of it (`Interop.BgBoardState`), existing only to marshal
+across the native boundary and distinct from `BgDataTypes_Lib.BoardState`.
+The marshaller (`FromExternal` / `ToExternalFlipped` / `ToExternal`)
 translates between the two. The `[UnmanagedCallersOnly]` exports
 (`GenerateSuccessorStates`, `GetStartingPosition`, `GetVersion`) are
-also `internal` — they're inaccessible to managed callers regardless,
-and NativeAOT's export discovery is attribute-based.
+`internal` too. None of this managed visibility touches the native
+surface — NativeAOT's export discovery is attribute-based, so the C
+exports are emitted identically whether the declaring class is public or
+internal (verified — see Pitfalls). Own tests reach the class through
+`InternalsVisibleTo`.
 
 ### Bg960 random starting position
 
@@ -247,25 +251,18 @@ pip-floor retry loop). BgMoveGen exposes it through the
 // Full play enumeration — for clients that need to animate or record moves.
 List<Play> plays = MoveGenerator.GeneratePlays(state, die1, die2);
 
-// Successor states only — for RL evaluation.
-List<BoardState> states = MoveGenerator.GenerateStates(state, die1, die2);
-
-// Lazy iterator — for early termination (alpha-beta, first-legal-move).
-foreach (var successor in MoveGenerator.EnumerateStates(state, die1, die2))
-{
-    float value = Evaluate(successor);
-    if (value > bestValue) { bestValue = value; bestState = successor.Copy(); }
-}
-
 // Validating turn-boundary primitives.
 bool legal = MoveGenerator.IsLegalPlay(state, play, die1, die2);
 MoveGenerator.ApplyPlay(state, play, die1, die2);   // throws on illegal play
 ```
 
-`GeneratePlays` / `GenerateStates` / `EnumerateStates` enforce
-must-use-both-dice and must-use-larger-die. A pass is represented as a
-single successor identical to the input board (flipped by the interop
-layer).
+`GeneratePlays` enforces must-use-both-dice and must-use-larger-die. A
+pass is represented as a single successor identical to the input board
+(flipped by the interop layer). The successor-state wrappers
+`GenerateStates` (materialized list, for RL evaluation) and
+`EnumerateStates` (lazy iterator, for early termination) delegate to it
+and inherit that behavior; both are `internal` (own-tests-only, no
+external consumer) and would be widened to `public` if one appears.
 
 `IsLegalPlay` matches by canonical `Play` equality — order- and
 decomposition-insensitive, hit-sensitive. `ApplyPlay` is the validating
@@ -361,6 +358,15 @@ int get_version();
   caller is fine (BgRLEngine's current model). If multi-thread use ever
   becomes needed, change to `[ThreadStatic]`. Interop tests must run
   sequentially — enforced via `[Collection("Interop")]`.
+- **NativeAOT exports survive an `internal` declaring type.** `Interop`,
+  its `[UnmanagedCallersOnly]` exports, and the `BgBoardState` marshalling
+  struct are all `internal`, yet `generate_successor_states`,
+  `get_starting_position`, and `get_version` are still emitted into the
+  published DLL and load fine from Python. Export discovery is
+  attribute-based, not visibility-based — verified empirically by
+  internalizing the class, republishing the NativeAOT DLL, and running
+  BgRLEngine's pytest (green). Keep the surface `internal`; nothing about
+  the native path needs it public.
 - **`EnumerateStates` yields fresh copies, not a shared buffer.** Every
   yielded `BoardState` is an independent `Copy()` of the input; consumers
   are free to retain or discard without further cloning.

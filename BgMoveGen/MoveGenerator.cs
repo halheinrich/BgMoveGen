@@ -477,7 +477,7 @@ public static class MoveGenerator
     /// with the empty pass play applied — i.e. unchanged), never an empty list.
     /// </para>
     /// </summary>
-    public static List<BoardState> GenerateStates(BoardState state, int die1, int die2)
+    internal static List<BoardState> GenerateStates(BoardState state, int die1, int die2)
     {
         var plays = GeneratePlays(state, die1, die2);
         var states = new List<BoardState>(plays.Count);
@@ -502,7 +502,7 @@ public static class MoveGenerator
     /// input), never an empty sequence.
     /// </para>
     /// </summary>
-    public static IEnumerable<BoardState> EnumerateStates(BoardState state, int die1, int die2)
+    internal static IEnumerable<BoardState> EnumerateStates(BoardState state, int die1, int die2)
     {
         var plays = GeneratePlays(state, die1, die2);
         foreach (var play in plays)
