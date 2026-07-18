@@ -28,6 +28,14 @@ namespace BgMoveGen;
 /// </remarks>
 public static class MoveNotationFormatter
 {
+    /// <summary>
+    /// Render <paramref name="play"/> as standard backgammon notation
+    /// (e.g. "8/5(2)", "24/18*", "6/off"). Returns the empty string for the
+    /// empty pass <see cref="Play"/>. See the type-level remarks for the
+    /// chain-grouping and hit-visibility rules.
+    /// </summary>
+    /// <param name="play">The play to render, read via its canonical chain form.</param>
+    /// <returns>The notation string, or "" for a pass.</returns>
     public static string Format(Play play)
     {
         var canonical = play.ToCanonical();

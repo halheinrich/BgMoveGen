@@ -1,9 +1,13 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
+  <!-- Framework / nullable / usings / warnings-as-errors / doc-file are
+       repo policy — see ..\Directory.Build.props. The two below are
+       per-project capability grants, not policy:
+         AllowUnsafeBlocks — required for the Interop pointer marshalling
+                             (BgBoardState* exports and helpers).
+         PublishAot        — this is the shipping project, published to a
+                             NativeAOT DLL; the test project must not be AOT. -->
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PublishAot>true</PublishAot>
   </PropertyGroup>

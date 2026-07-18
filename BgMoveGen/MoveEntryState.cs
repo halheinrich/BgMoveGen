@@ -113,7 +113,10 @@ public sealed class MoveEntryState
         RecomputeLegalNextClicks();
     }
 
+    /// <summary>The first die rolled this turn, as passed to the constructor.</summary>
     public int Die1 => _die1;
+
+    /// <summary>The second die rolled this turn, as passed to the constructor.</summary>
     public int Die2 => _die2;
 
     /// <summary>
@@ -310,7 +313,7 @@ public sealed class MoveEntryState
     /// advance consumes).
     ///
     /// Legality and reachability are not re-implemented: candidate single moves come from
-    /// <see cref="MoveGenerator.SingleMoves"/>, "the turn can still complete" is the shared
+    /// <see cref="MoveGenerator.SingleMoves(BoardState, int, System.Span{Move})"/>, "the turn can still complete" is the shared
     /// <see cref="CanReachTarget"/>, and every commit goes through <see cref="CommitMove"/>
     /// so canonicalization, undo, and the legal-click recompute stay single-sourced. Make
     /// and land-one are one routine — <see cref="CollectMinimalLandingPaths"/> at target

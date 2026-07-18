@@ -1,0 +1,26 @@
+<Project>
+
+  <!-- Repo-wide build policy, matching the XgToJson / BgArena_Blazor
+       precedent: every project targets one framework, warnings are errors,
+       and public surfaces carry XML docs from birth. The test project opts
+       out of doc-file generation (in its csproj) but keeps warnings-as-errors.
+
+       What belongs here: properties uniform across this repo's projects *by
+       policy*, so a change is one edit (a future .NET 11 bump is one line).
+       What stays in a csproj: anything encoding a per-project decision or a
+       capability grant — not merely a value that happens to coincide today.
+       PublishAot (shipping-only NativeAOT publish) and AllowUnsafeBlocks (the
+       shipping project needs it for interop pointer marshalling, the test
+       project for InteropTests — two independent per-project justifications,
+       not a repo policy) stay in their csproj; hoisting the unsafe grant would
+       silently extend it to any future project that has no such need. The test
+       project's doc-file override is likewise per-project. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+</Project>

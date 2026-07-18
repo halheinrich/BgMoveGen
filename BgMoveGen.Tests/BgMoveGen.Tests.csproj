@@ -1,11 +1,15 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <!-- AllowUnsafeBlocks — required for InteropTests, which take pointers to
+         BgBoardState buffers to drive the interop core directly. A per-project
+         capability grant, not repo policy; see ..\Directory.Build.props. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- The one exception to the repo-wide policy in Directory.Build.props:
+         test classes are not a consumed API, so a doc file buys nothing and
+         CS1591 would only add noise. Warnings-as-errors still applies. -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
 
   <ItemGroup>
