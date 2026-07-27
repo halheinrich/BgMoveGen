@@ -401,3 +401,6 @@ int get_version();
 - Extend the `Optimized_MatchesReference` harness with more positions: bar
   entry with and without blockers, late-bear-off edge cases, near-blocked
   positions, contact/race transitions.
+- Wording polish in this doc: the Pitfalls bullet "**`IsLegalPlay` and
+  `ApplyPlay` are not hot-path**" uses "hot-path" as a predicate adjective —
+  a minor predicate/prenominal distinction. Future polish candidate.
