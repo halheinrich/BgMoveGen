@@ -6,7 +6,8 @@
 
 ## Stack
 
-C# / .NET 10 / xUnit. NativeAOT-published DLL consumed from Python via ctypes.
+C# / .NET 10 / xUnit / BenchmarkDotNet. NativeAOT-published DLL consumed from
+Python via ctypes.
 
 ## Solution
 
@@ -54,6 +55,11 @@ BgMoveGen.Tests/
   MoveNotationFormatterTests.cs
   MoveEntryStateTests.cs
   InteropTests.cs
+BgMoveGen.Benchmarks/
+  BgMoveGen.Benchmarks.csproj
+  Program.cs                  — BenchmarkSwitcher entry point
+  MoveGenerationBenchmarks.cs — GeneratePlays across the four play-assembly
+                                shapes; see Benchmarks below
 ```
 
 ## Architecture
@@ -243,6 +249,35 @@ pip-floor retry loop). BgMoveGen exposes it through the
   detection, Bg960 conservation and seed reproducibility); MoveEntryState
   click-by-click assembly.
 
+### Benchmarks
+
+`BgMoveGen.Benchmarks` is a BenchmarkDotNet harness over the public
+`GeneratePlays` entry point — the surface BgRLEngine drives through interop,
+and the one whose cost matters. Four cases cover the distinct play-assembly
+shapes:
+
+| Benchmark | Exercises |
+|---|---|
+| `DoublesFullDepth` | 3-3 from the opening — every branch reaches depth four |
+| `DoublesPartialDepth` | 4-4 onto a five-point board with two on the bar — the reduced-depth fallbacks |
+| `NonDoubles` | 6-4 from the opening — the two-pass avoidance-dedup path |
+| `AllOpeningRolls` | all 21 rolls from the opening — the aggregate signal |
+
+`[MemoryDiagnoser]` is on because allocation, not nanoseconds, is the property
+this generator is designed around: the documented invariant is zero allocation
+in the recursion, with only the result `List<Play>` and its backing array on
+the heap.
+
+Run it in Release:
+
+```
+dotnet run -c Release --project BgMoveGen.Benchmarks
+```
+
+Excluded from `dotnet test` via `IsTestProject=false` in its csproj — a run
+takes minutes and asserts nothing, so it is measured on demand, never as part
+of the suite.
+
 ## Public API
 
 ### Managed — `MoveGenerator`
@@ -370,6 +405,41 @@ int get_version();
 - **`EnumerateStates` yields fresh copies, not a shared buffer.** Every
   yielded `BoardState` is an independent `Copy()` of the input; consumers
   are free to retain or discard without further cloning.
+- **`Play.Create` / collection expressions do not belong in the generator's
+  play-assembly sites.** BgDataTypes_Lib's intent-level construction surface
+  (`Play.Create(m1, m2, m3, m4)`, `Play p = [m1, m2];`) reads better than
+  `new Play(); play.Add(m1); play.Add(m2); …` and the tests use it
+  throughout — but adopting it inside `GenerateDoubles` /
+  `GenerateNonDoubles` measured a real slowdown. Head-to-head, both variants
+  as sibling `[Benchmark]` methods in one process on an idle machine: 1.48x
+  on `DoublesFullDepth`, 1.23x on `AllOpeningRolls`, 1.19x on `NonDoubles`,
+  allocation byte-identical. `Create` loops over its `params
+  ReadOnlySpan<Move>` calling `Add`, so `Count` is not statically known per
+  element and the JIT cannot fold the `Add` switch the way it does across
+  four separately-inlined calls. The incremental `Add` spelling at those
+  sites is therefore a deliberate performance choice, not an un-migrated
+  leftover — leave it. Revisit only if `Play.Create` becomes inlineable
+  upstream. (The recursion's `Add` / `RemoveLast` use is separate and
+  correct on its own terms: those are the documented incremental primitives
+  and the moves are not all in hand.)
+- **Hot-path changes get benchmarked before merge.** This is a hot-path
+  producer — BgRLEngine calls `generate_successor_states` millions of times
+  per training run. Any change touching the generation paths runs
+  `BgMoveGen.Benchmarks` before and after, *including* a refactor billed as
+  behaviour-neutral, with both tables recorded in the commit body.
+  Allocation is the tighter of the two constraints: a moved `Allocated`
+  figure is a regression even when the clock does not notice.
+- **Benchmark numbers off this machine are contended.** eXtremeGammon
+  rollouts routinely run in the background here and eat ~5 cores. That
+  inflates BenchmarkDotNet's *mean* by up to 1.8x and its StdDev by 10x —
+  enough on its own to invent or mask a regression, and measured: the same
+  unmodified binary reported 7.7 us and 14.1 us on `AllOpeningRolls` in two
+  runs. Two defences. Compare the *minimum* per-iteration figure (contention
+  only ever adds time, so the min barely moves across load regimes — 880 ns
+  vs 895 ns for that same pair). And for a real before/after decision, put
+  both variants in one process as sibling `[Benchmark]` methods so identical
+  load hits both. Sequential "measure, edit, measure" is not a valid
+  comparison here.
 - **`IsLegalPlay` and `ApplyPlay` are not hot-path.** Both re-enumerate
   via `GeneratePlays`. Acceptable for turn-boundary validation; for
   inner-loop repeated checks, drive the generator directly.
@@ -398,6 +468,9 @@ int get_version();
 
 - Profile and shrink remaining allocations (`List<Play>` /
   `List<BoardState>` results, `Play` struct handling on the boundary).
+  `BgMoveGen.Benchmarks` now provides the `[MemoryDiagnoser]` baseline to
+  measure against — 9,248 B for a full-depth doubles roll, 65,856 B for all
+  21 opening rolls.
 - Extend the `Optimized_MatchesReference` harness with more positions: bar
   entry with and without blockers, late-bear-off edge cases, near-blocked
   positions, contact/race transitions.

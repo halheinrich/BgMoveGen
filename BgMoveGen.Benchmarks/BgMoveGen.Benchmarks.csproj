@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Framework / nullable / usings / warnings-as-errors / doc-file are
+       repo policy — see ..\Directory.Build.props. The properties below are
+       per-project decisions, not policy:
+         OutputType    — BenchmarkDotNet hosts its runs from an executable
+                         entry point; the harness is a console app, not a
+                         library.
+         IsTestProject — explicitly false so `dotnet test BgMoveGen.slnx`
+                         skips this project. Benchmarks are measured on
+                         demand by running this project in Release, never as
+                         part of the suite: a run takes minutes and asserts
+                         nothing. Invocation is in INSTRUCTIONS.md.
+
+       Deliberately *not* set: Optimize. Forcing it on would let a Debug
+       build produce Release-like timings, but at the cost of optimized IL
+       compiled with DEBUG still defined — a configuration matching neither.
+       Better to leave Debug honestly unoptimized and let BenchmarkDotNet's
+       own validator refuse the run, which it does with an explicit
+       build-in-Release message. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>false</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BgMoveGen\BgMoveGen.csproj" />
+  </ItemGroup>
+
+</Project>

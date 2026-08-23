@@ -2,6 +2,9 @@
 bin/
 obj/
 
+## BenchmarkDotNet run output (measured on demand, not checked in)
+BenchmarkDotNet.Artifacts/
+
 ## Visual Studio
 .vs/
 *.user

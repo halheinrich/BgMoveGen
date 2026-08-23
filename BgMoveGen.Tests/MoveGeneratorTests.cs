@@ -534,9 +534,7 @@ public class IsLegalPlayTests
         // Re-running with dice swapped exercises that GeneratePlays canonicalises
         // small/big internally — the legality answer must not depend on order.
         var state = BoardState.Standard();
-        var play = new Play();
-        play.Add(new Move(24, 18));
-        play.Add(new Move(13, 9));
+        Play play = [new(24, 18), new(13, 9)];
 
         Assert.True(MoveGenerator.IsLegalPlay(state, play, 6, 4));
         Assert.True(MoveGenerator.IsLegalPlay(state, play, 4, 6));
@@ -549,9 +547,10 @@ public class IsLegalPlayTests
         // pairing it with the only 4-or-6 source on a 6-4 from Standard means
         // we need 13/9 with the 4. Build a clearly-illegal play: 24/17 (uses 7).
         var state = BoardState.Standard();
-        var bogus = new Play();
-        bogus.Add(new Move(24, 17));   // distance 7 — neither die
-        bogus.Add(new Move(13, 9));
+        Play bogus = [
+            new(24, 17),   // distance 7 — neither die
+            new(13, 9),
+        ];
 
         Assert.False(MoveGenerator.IsLegalPlay(state, bogus, 6, 4));
     }
@@ -562,8 +561,7 @@ public class IsLegalPlayTests
         // Single-move "play" when both dice are usable — fails the must-use-both
         // requirement, so cannot be in the legal set.
         var state = BoardState.Standard();
-        var stub = new Play();
-        stub.Add(new Move(24, 18));   // uses the 6 only
+        Play stub = [new(24, 18)];   // uses the 6 only
 
         Assert.False(MoveGenerator.IsLegalPlay(state, stub, 6, 4));
     }
@@ -633,16 +631,15 @@ public class IsLegalPlayTests
         state.Points[19] = -5;
         state.RecalcHighPoint();
 
-        var noHitVariant = new Play();
-        noHitVariant.Add(new Move(24, 18));   // ToPt positive — hit-less form
-        noHitVariant.Add(new Move(13, 9));    // 13/9 with the 4
+        Play noHitVariant = [
+            new(24, 18),   // ToPt positive — hit-less form
+            new(13, 9),    // 13/9 with the 4
+        ];
 
         Assert.False(MoveGenerator.IsLegalPlay(state, noHitVariant, 6, 4));
 
         // The correctly-encoded hit form is, of course, legal.
-        var hitVariant = new Play();
-        hitVariant.Add(new Move(24, -18));
-        hitVariant.Add(new Move(13, 9));
+        Play hitVariant = [new(24, -18), new(13, 9)];
 
         Assert.True(MoveGenerator.IsLegalPlay(state, hitVariant, 6, 4));
     }
@@ -659,16 +656,9 @@ public class IsLegalPlayTests
         // did not keep failed to match — now all encodings of 13/8 are one play.
         var state = BoardState.Standard();
 
-        var viaTen = new Play();
-        viaTen.Add(new Move(13, 10));   // big die first
-        viaTen.Add(new Move(10, 8));
-
-        var viaEleven = new Play();
-        viaEleven.Add(new Move(13, 11)); // small die first
-        viaEleven.Add(new Move(11, 8));
-
-        var combined = new Play();
-        combined.Add(new Move(13, 8));   // the analyzer-style collapsed form
+        Play viaTen = [new(13, 10), new(10, 8)];      // big die first
+        Play viaEleven = [new(13, 11), new(11, 8)];   // small die first
+        Play combined = [new(13, 8)];                 // the analyzer-style collapsed form
 
         Assert.True(MoveGenerator.IsLegalPlay(state, viaTen, 3, 2));
         Assert.True(MoveGenerator.IsLegalPlay(state, viaEleven, 3, 2));
@@ -740,9 +730,7 @@ public class IsLegalPlayTests
 
         var plays = MoveGenerator.GeneratePlays(state, 2, 3);
 
-        var expected = new Play();
-        expected.Add(new Move(25, 23));
-        expected.Add(new Move(25, 22));
+        Play expected = [new(25, 23), new(25, 22)];
 
         var only = Assert.Single(plays);
         Assert.Equal(expected, only);
@@ -761,9 +749,7 @@ public class IsLegalPlayTests
 
         var plays = MoveGenerator.GeneratePlays(state, 2, 5);
 
-        var expected = new Play();
-        expected.Add(new Move(2, 0));
-        expected.Add(new Move(2, 0));
+        Play expected = [new(2, 0), new(2, 0)];
 
         var only = Assert.Single(plays);
         Assert.Equal(expected, only);
@@ -780,9 +766,7 @@ public class ApplyPlayValidatingTests
         var direct = BoardState.Standard();
         var validated = BoardState.Standard();
 
-        var play = new Play();
-        play.Add(new Move(24, 18));
-        play.Add(new Move(13, 9));
+        Play play = [new(24, 18), new(13, 9)];
 
         direct.ApplyPlay(play);
         MoveGenerator.ApplyPlay(validated, play, 6, 4);
@@ -796,9 +780,10 @@ public class ApplyPlayValidatingTests
     public void IllegalPlay_Throws_ArgumentException()
     {
         var state = BoardState.Standard();
-        var bogus = new Play();
-        bogus.Add(new Move(24, 17));   // distance 7 — illegal under 6-4
-        bogus.Add(new Move(13, 9));
+        Play bogus = [
+            new(24, 17),   // distance 7 — illegal under 6-4
+            new(13, 9),
+        ];
 
         Assert.Throws<ArgumentException>(
             () => MoveGenerator.ApplyPlay(state, bogus, 6, 4));
@@ -814,9 +799,7 @@ public class ApplyPlayValidatingTests
         int[] snapshotPoints = (int[])state.Points.Clone();
         int snapshotHigh = state.HighPointOccupied;
 
-        var bogus = new Play();
-        bogus.Add(new Move(24, 17));
-        bogus.Add(new Move(13, 9));
+        Play bogus = [new(24, 17), new(13, 9)];
 
         Assert.Throws<ArgumentException>(
             () => MoveGenerator.ApplyPlay(state, bogus, 6, 4));
@@ -848,9 +831,10 @@ public class ApplyPlayValidatingTests
 
         int[] snapshotPoints = (int[])state.Points.Clone();
 
-        var noHitVariant = new Play();
-        noHitVariant.Add(new Move(24, 18));   // hit-less form of the hitting play
-        noHitVariant.Add(new Move(13, 9));
+        Play noHitVariant = [
+            new(24, 18),   // hit-less form of the hitting play
+            new(13, 9),
+        ];
 
         Assert.Throws<ArgumentException>(
             () => MoveGenerator.ApplyPlay(state, noHitVariant, 6, 4));
@@ -868,9 +852,7 @@ public class ApplyPlayValidatingTests
         // generator's own candidate applied directly.
         var state = BoardState.Standard();
 
-        var decomposed = new Play();
-        decomposed.Add(new Move(13, 10));
-        decomposed.Add(new Move(10, 8));
+        Play decomposed = [new(13, 10), new(10, 8)];
 
         var legal = MoveGenerator.GeneratePlays(BoardState.Standard(), 3, 2);
         var candidate = legal.Single(p => p == decomposed);
@@ -902,9 +884,10 @@ public class ApplyPlayValidatingTests
         state.Points[20] = -2;
         state.RecalcHighPoint();
 
-        var decomposed = new Play();
-        decomposed.Add(new Move(13, 10));   // routes through the blocked point
-        decomposed.Add(new Move(10, 8));
+        Play decomposed = [
+            new(13, 10),   // routes through the blocked point
+            new(10, 8),
+        ];
 
         Assert.True(MoveGenerator.IsLegalPlay(state, decomposed, 3, 2));
 
