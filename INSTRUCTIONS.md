@@ -59,7 +59,8 @@ BgMoveGen.Benchmarks/
   BgMoveGen.Benchmarks.csproj
   Program.cs                  — BenchmarkSwitcher entry point
   MoveGenerationBenchmarks.cs — GeneratePlays across the four play-assembly
-                                shapes; see Benchmarks below
+                                shapes, plus the load canary; see Benchmarks
+                                below
 ```
 
 ## Architecture
@@ -254,7 +255,7 @@ pip-floor retry loop). BgMoveGen exposes it through the
 `BgMoveGen.Benchmarks` is a BenchmarkDotNet harness over the public
 `GeneratePlays` entry point — the surface BgRLEngine drives through interop,
 and the one whose cost matters. Four cases cover the distinct play-assembly
-shapes:
+shapes; the fifth row is not a generator measurement at all:
 
 | Benchmark | Exercises |
 |---|---|
@@ -280,11 +281,24 @@ across runs licenses reading the generator deltas and a canary that drifts
 condemns the whole set. Alternate at least A, B, A; on drift, re-run rather
 than average. See the contention Pitfall.
 
-Run it in Release:
+Run it in Release. `Program.cs` uses `BenchmarkSwitcher`, which *requires* a
+selection — without `--filter` it stops and prompts, so the bare command hangs
+a non-interactive shell:
 
 ```
-dotnet run -c Release --project BgMoveGen.Benchmarks
+dotnet run -c Release --project BgMoveGen.Benchmarks -- --filter '*'
 ```
+
+Run it through the **project**, not the solution. `dotnet build BgMoveGen.slnx
+-c Release` does not propagate the configuration across the out-of-solution
+`ProjectReference`: it builds BgDataTypes_Lib in *Debug* and copies that
+unoptimized assembly into the Release output, so a run staged that way
+measures the dependency's Debug codegen. The `--project` form above
+propagates Release correctly. When a measurement turns on BgDataTypes_Lib
+codegen — `Play` construction does — check the copied
+`BgDataTypes_Lib.dll` in the benchmark's output against the one under
+`BgDataTypes_Lib/BgDataTypes_Lib/bin/Release/net10.0/` before believing
+the numbers; if it matches `bin/Debug/` instead, the run is void.
 
 Excluded from `dotnet test` via `IsTestProject=false` in its csproj — a run
 takes minutes and asserts nothing, so it is measured on demand, never as part
@@ -417,23 +431,42 @@ int get_version();
 - **`EnumerateStates` yields fresh copies, not a shared buffer.** Every
   yielded `BoardState` is an independent `Copy()` of the input; consumers
   are free to retain or discard without further cloning.
-- **`Play.Create` / collection expressions do not belong in the generator's
-  play-assembly sites.** BgDataTypes_Lib's intent-level construction surface
-  (`Play.Create(m1, m2, m3, m4)`, `Play p = [m1, m2];`) reads better than
-  `new Play(); play.Add(m1); play.Add(m2); …` and the tests use it
-  throughout — but adopting it inside `GenerateDoubles` /
-  `GenerateNonDoubles` measured a real slowdown. Head-to-head, both variants
-  as sibling `[Benchmark]` methods in one process on an idle machine: 1.48x
-  on `DoublesFullDepth`, 1.23x on `AllOpeningRolls`, 1.19x on `NonDoubles`,
-  allocation byte-identical. `Create` loops over its `params
-  ReadOnlySpan<Move>` calling `Add`, so `Count` is not statically known per
-  element and the JIT cannot fold the `Add` switch the way it does across
-  four separately-inlined calls. The incremental `Add` spelling at those
-  sites is therefore a deliberate performance choice, not an un-migrated
-  leftover — leave it. Revisit only if `Play.Create` becomes inlineable
-  upstream. (The recursion's `Add` / `RemoveLast` use is separate and
-  correct on its own terms: those are the documented incremental primitives
-  and the moves are not all in hand.)
+- **Fixed-arity `Play.Create` is the spelling at the generator's
+  play-assembly sites; the span-taking spellings are not.** BgDataTypes_Lib's
+  intent-level construction surface (`Play.Create(m1, m2, m3, m4)`) reads
+  better than `new Play(); play.Add(m1); play.Add(m2); …` — the doubles
+  depth ladder collapses from 24 lines to four and becomes visible at a
+  glance — and since BgDataTypes_Lib gained fixed-arity `Create` overloads it
+  also costs nothing. Those overloads take one to four `Move`s and write the
+  play's slots directly, with no argument buffer in between, so a call folds
+  the way four separately-inlined `Add` calls did. Measured on this adoption,
+  sentinel-validated A/B/A on an idle machine: `DoublesFullDepth` 0.90x
+  (847 ns → 765 ns), `DoublesPartialDepth` 0.94x, `NonDoubles` 1.015x,
+  `AllOpeningRolls` 0.9994x (7,032 ns → 7,028 ns), allocation byte-identical
+  on every row. Parity, with the four-move site the one that gains.
+
+  This reverses an earlier ruling that the incremental `Add` spelling was a
+  deliberate performance choice. That ruling was right on its numbers —
+  1.48x on `DoublesFullDepth` against the `Create` of the day, which looped
+  its `params ReadOnlySpan<Move>` so `Count` was not statically known per
+  element — and the fixed-arity overloads exist because of it. It is the
+  grounds that went stale, not the measurement.
+
+  Still excluded: the span-taking spellings, the collection expression
+  `Play p = [m1, m2];` among them, since `[CollectionBuilder]` upstream
+  points at `Create(params ReadOnlySpan<Move>)`. That overload is no longer
+  the loop that made the first attempt slow — it is branch-unrolled too — but
+  it still costs about 1.6x, and upstream's own measurement puts all of the
+  residual in the caller's argument buffer. That cost is caller-side, so no
+  upstream change retires it: hot-path sites take the fixed-arity form, and
+  the collection expression stays in tests and other cold callers. Upstream
+  keeps `[OverloadResolutionPriority(-1)]` on the span overload so a
+  fixed-arity call cannot fall into it by accident — do not "simplify" a
+  `Play.Create(m1, m2)` in the generator into `[m1, m2]`.
+
+  (The recursion's `Add` / `RemoveLast` use is separate and correct on its
+  own terms: those are the documented incremental primitives and the moves
+  are not all in hand.)
 - **Hot-path changes get benchmarked before merge.** This is a hot-path
   producer — BgRLEngine calls `generate_successor_states` millions of times
   per training run. Any change touching the generation paths runs
@@ -446,12 +479,20 @@ int get_version();
   inflates BenchmarkDotNet's *mean* by up to 1.8x and its StdDev by 10x —
   enough on its own to invent or mask a regression, and measured: the same
   unmodified binary reported 7.7 us and 14.1 us on `AllOpeningRolls` in two
-  runs. Two defences. Compare the *minimum* per-iteration figure (contention
+  runs. Three defences. Compare the *minimum* per-iteration figure (contention
   only ever adds time, so the min barely moves across load regimes — 880 ns
-  vs 895 ns for that same pair). And for a real before/after decision, put
-  both variants in one process as sibling `[Benchmark]` methods so identical
-  load hits both. Sequential "measure, edit, measure" is not a valid
-  comparison here.
+  vs 895 ns for that same pair). For a real before/after decision, put both
+  variants in one process as sibling `[Benchmark]` methods so identical load
+  hits both. And when that is impossible because the two variants are two
+  *spellings of the same method* — only one of which can be compiled into a
+  given binary — run the two binaries alternately, A, B, A at minimum, and
+  read `SentinelNotationFormat` in each: it sits on a path the change under
+  test cannot reach and is measured under the same load as the rows that
+  matter *in its own run*, so it reports whether the machine held still
+  between them. Take the deltas only if the canary agrees across runs inside
+  its own error bars; if it drifts, the set is contaminated — re-run, never
+  average. Sequential "measure, edit, measure" with nothing watching the
+  machine remains not a valid comparison here.
 - **`IsLegalPlay` and `ApplyPlay` are not hot-path.** Both re-enumerate
   via `GeneratePlays`. Acceptable for turn-boundary validation; for
   inner-loop repeated checks, drive the generator directly.

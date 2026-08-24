@@ -148,35 +148,21 @@ public static class MoveGenerator
                     while (NextMove(state, die, fr4, out Move m4))
                     {
                         anyAt4 = true;
-                        var play = new Play();
-                        play.Add(m1); play.Add(m2); play.Add(m3); play.Add(m4);
-                        results.Add(play);
+                        results.Add(Play.Create(m1, m2, m3, m4));
                         fr4 = m4.FrPt;
                     }
                     if (!anyAt4 && results.Count == 0)
-                    {
-                        var play = new Play();
-                        play.Add(m1); play.Add(m2); play.Add(m3);
-                        results.Add(play);
-                    }
+                        results.Add(Play.Create(m1, m2, m3));
                     state.UndoMove(m3);
                     fr3 = m3.FrPt;
                 }
                 if (!anyAt3 && results.Count == 0)
-                {
-                    var play = new Play();
-                    play.Add(m1); play.Add(m2);
-                    results.Add(play);
-                }
+                    results.Add(Play.Create(m1, m2));
                 state.UndoMove(m2);
                 fr2 = m2.FrPt;
             }
             if (!anyAt2 && results.Count == 0)
-            {
-                var play = new Play();
-                play.Add(m1);
-                results.Add(play);
-            }
+                results.Add(Play.Create(m1));
             state.UndoMove(m1);
             fr1 = m1.FrPt;
         }
@@ -221,9 +207,7 @@ public static class MoveGenerator
                 while (NextMove(state, bigDie, fr2, out Move m2))
                 {
                     anyTwoMoves = true;
-                    var play = new Play();
-                    play.Add(m1); play.Add(m2);
-                    results.Add(play);
+                    results.Add(Play.Create(m1, m2));
                     fr2 = m2.FrPt;
                 }
                 state.UndoMove(m1);
@@ -266,9 +250,7 @@ public static class MoveGenerator
                         }
                     }
                     anyTwoMoves = true;
-                    var play = new Play();
-                    play.Add(m1); play.Add(m2);
-                    results.Add(play);
+                    results.Add(Play.Create(m1, m2));
                     fr2 = m2.FrPt;
                 }
                 state.UndoMove(m1);
@@ -293,9 +275,7 @@ public static class MoveGenerator
                     while (NextMove(state, bigDie, fr2, out Move m2))
                     {
                         anyTwoMoves = true;
-                        var play = new Play();
-                        play.Add(m1.Value); play.Add(m2);
-                        results.Add(play);
+                        results.Add(Play.Create(m1.Value, m2));
                         fr2 = m2.FrPt;
                     }
                     state.UndoMove(m1.Value);
@@ -355,9 +335,7 @@ public static class MoveGenerator
                             // If smallInt <= 0, bear-off intermediate — not a dup
                         }
                         anyTwoMoves = true;
-                        var play = new Play();
-                        play.Add(m1.Value); play.Add(m2);
-                        results.Add(play);
+                        results.Add(Play.Create(m1.Value, m2));
                         fr2 = m2.FrPt;
                     }
                     state.UndoMove(m1.Value);
@@ -372,9 +350,7 @@ public static class MoveGenerator
             int fr1 = 26;
             while (NextMove(state, bigDie, fr1, out Move m1))
             {
-                var play = new Play();
-                play.Add(m1);
-                results.Add(play);
+                results.Add(Play.Create(m1));
                 fr1 = m1.FrPt;
             }
 
@@ -384,9 +360,7 @@ public static class MoveGenerator
                 fr1 = 26;
                 while (NextMove(state, smallDie, fr1, out Move m1))
                 {
-                    var play = new Play();
-                    play.Add(m1);
-                    results.Add(play);
+                    results.Add(Play.Create(m1));
                     fr1 = m1.FrPt;
                 }
             }
