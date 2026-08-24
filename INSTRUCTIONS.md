@@ -262,11 +262,23 @@ shapes:
 | `DoublesPartialDepth` | 4-4 onto a five-point board with two on the bar — the reduced-depth fallbacks |
 | `NonDoubles` | 6-4 from the opening — the two-pass avoidance-dedup path |
 | `AllOpeningRolls` | all 21 rolls from the opening — the aggregate signal |
+| `SentinelNotationFormat` | notation formatting of a fixed play set — the load canary, not a generator path |
 
 `[MemoryDiagnoser]` is on because allocation, not nanoseconds, is the property
 this generator is designed around: the documented invariant is zero allocation
 in the recursion, with only the result `List<Play>` and its backing array on
 the heap.
+
+`SentinelNotationFormat` is not a generator measurement. It is a load canary
+for the case where the one-process sibling-benchmark form is unavailable —
+when the two variants under test are two *spellings of the same method*, only
+one of which can be compiled into a given binary. Then the only option is two
+binaries run alternately, and the canary is what makes that sequential
+comparison readable: it runs under the same load as the generator rows in its
+own run, on a path no generator change can reach, so a canary that holds
+across runs licenses reading the generator deltas and a canary that drifts
+condemns the whole set. Alternate at least A, B, A; on drift, re-run rather
+than average. See the contention Pitfall.
 
 Run it in Release:
 

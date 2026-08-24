@@ -33,6 +33,7 @@ public class MoveGenerationBenchmarks
     private BoardState _standard = null!;
     private BoardState _partialEntry = null!;
     private (int Die1, int Die2)[] _allRolls = null!;
+    private Play[] _sentinelPlays = null!;
 
     /// <summary>
     /// Builds the positions once. <see cref="MoveGenerator.GeneratePlays"/>
@@ -51,6 +52,8 @@ public class MoveGenerationBenchmarks
             for (int d2 = d1; d2 <= 6; d2++)
                 rolls.Add((d1, d2));
         _allRolls = [.. rolls];
+
+        _sentinelPlays = SentinelPlays();
     }
 
     /// <summary>
@@ -87,6 +90,67 @@ public class MoveGenerationBenchmarks
             total += MoveGenerator.GeneratePlays(_standard, die1, die2).Count;
         return total;
     }
+
+    /// <summary>
+    /// Load canary. Formats a fixed set of plays through
+    /// <see cref="MoveNotationFormatter.Format(Play)"/> — a code path no
+    /// change to the generator can reach.
+    ///
+    /// <para>
+    /// It exists to make a *sequential* A/B valid on this machine. The
+    /// preferred form — both variants as sibling <c>[Benchmark]</c> methods
+    /// in one process — is unavailable when the two variants are two
+    /// spellings of the same method, since only one can be compiled into a
+    /// given binary. The fallback is to run two binaries alternately and
+    /// carry this row in both: it is measured under the same load as the
+    /// generator rows in its own run, so if it holds across runs the machine
+    /// held still and the generator deltas are real, and if it drifts the
+    /// runs are contaminated and no generator delta can be read from them.
+    /// See the contention Pitfall in <c>INSTRUCTIONS.md</c>.
+    /// </para>
+    ///
+    /// <para>
+    /// Sized to land in the same low-microsecond range as
+    /// <see cref="AllOpeningRolls"/>, so background load perturbs the two
+    /// comparably rather than swamping one and sparing the other.
+    /// </para>
+    /// </summary>
+    [Benchmark]
+    public int SentinelNotationFormat()
+    {
+        int total = 0;
+        foreach (var play in _sentinelPlays)
+            total += MoveNotationFormatter.Format(play).Length;
+        return total;
+    }
+
+    /// <summary>
+    /// The canary's fixed play set — twelve plays spanning the shapes the
+    /// formatter branches on (plain moves, repeats that collapse to a count
+    /// suffix, bar entry, hits, chained hops, bear-offs) so the row's cost is
+    /// spread across its paths rather than concentrated in one.
+    ///
+    /// <para>
+    /// Built here rather than generated, so the canary shares no code with
+    /// the generator it is watching. Construction runs in
+    /// <see cref="Setup"/> and is not measured.
+    /// </para>
+    /// </summary>
+    private static Play[] SentinelPlays() =>
+    [
+        Play.Create(new Move(13, 8), new Move(24, 22)),
+        Play.Create(new Move(13, 11), new Move(13, 11)),
+        Play.Create(new Move(25, 20), new Move(25, 22)),
+        Play.Create(new Move(24, -18), new Move(13, -9)),
+        Play.Create(new Move(13, 11), new Move(11, -9), new Move(9, 7)),
+        Play.Create(new Move(24, 20), new Move(13, 9), new Move(13, 9), new Move(8, 4)),
+        Play.Create(new Move(5, 1), new Move(4, 0), new Move(4, 0), new Move(4, 0)),
+        Play.Create(new Move(6, 0), new Move(5, 0)),
+        Play.Create(new Move(25, -22)),
+        Play.Create(new Move(24, 21), new Move(21, -15)),
+        Play.Create(new Move(8, 5), new Move(8, 5), new Move(6, 3), new Move(6, 3)),
+        Play.Create(new Move(6, 3), new Move(1, 0)),
+    ];
 
     /// <summary>
     /// Two checkers on the bar against a five-point board with only the
