@@ -1,4 +1,4 @@
-using BenchmarkDotNet.Attributes;
+﻿using BenchmarkDotNet.Attributes;
 using BgDataTypes_Lib;
 
 namespace BgMoveGen.Benchmarks;
@@ -10,12 +10,13 @@ namespace BgMoveGen.Benchmarks;
 /// cost matters.
 ///
 /// <para>
-/// The four cases cover the distinct shapes of the generator's play-assembly
+/// The five generator cases cover the distinct shapes of the play-assembly
 /// paths: full-depth doubles (four moves in hand at the innermost loop),
 /// partial-depth doubles (the reduced-depth fallbacks that fire when fewer
 /// than four dice can be played), a non-doubles roll (the two-pass
-/// avoidance-dedup path), and an all-21-rolls sweep as the aggregate
-/// regression signal.
+/// avoidance-dedup path), a non-doubles bear-off (that same path where a move
+/// encodes as (point, 0) and the dedup has to work harder), and an
+/// all-21-rolls sweep as the aggregate regression signal.
 /// </para>
 ///
 /// <para>
@@ -32,6 +33,7 @@ public class MoveGenerationBenchmarks
 {
     private BoardState _standard = null!;
     private BoardState _partialEntry = null!;
+    private BoardState _bearOff = null!;
     private (int Die1, int Die2)[] _allRolls = null!;
     private Play[] _sentinelPlays = null!;
 
@@ -46,6 +48,7 @@ public class MoveGenerationBenchmarks
     {
         _standard = BoardState.Standard();
         _partialEntry = PartialEntryPosition();
+        _bearOff = BearOffPosition();
 
         var rolls = new List<(int, int)>();
         for (int d1 = 1; d1 <= 6; d1++)
@@ -77,6 +80,17 @@ public class MoveGenerationBenchmarks
     /// </summary>
     [Benchmark]
     public List<Play> NonDoubles() => MoveGenerator.GeneratePlays(_standard, 6, 4);
+
+    /// <summary>
+    /// A non-doubles roll on a home board — the bear-off shape of the two-pass
+    /// path. The other four rows never reach a bear-off at all (the opening
+    /// position has checkers on the 24-point; the partial-depth position has
+    /// two on the bar), so without this row the two-bear-off duplicate
+    /// avoidance is unmeasured. See <see cref="BearOffPosition"/> for why the
+    /// position is shaped the way it is.
+    /// </summary>
+    [Benchmark]
+    public List<Play> NonDoublesBearOff() => MoveGenerator.GeneratePlays(_bearOff, 6, 5);
 
     /// <summary>
     /// All 21 distinct rolls from the opening position — the aggregate
@@ -151,6 +165,44 @@ public class MoveGenerationBenchmarks
         Play.Create(new Move(8, 5), new Move(8, 5), new Move(6, 3), new Move(6, 3)),
         Play.Create(new Move(6, 3), new Move(1, 0)),
     ];
+
+    /// <summary>
+    /// All fifteen on-roll checkers inside the home board, the opponent's
+    /// fifteen inside his own — a plain race with no contact — and a
+    /// <b>lone</b> checker on the highest occupied point.
+    ///
+    /// <para>
+    /// The lone checker is what makes this row reach the two-bear-off
+    /// duplicate avoidance rather than merely walk past it. Under 6-5 the
+    /// 5-point bears off either way — exactly with the 5, as the highest
+    /// point with the 6 — and taking that checker drops the highest point to
+    /// the 4, which then bears off with whichever die is left. Same two moves
+    /// from both die assignments, which is precisely the pair Pass 2 has to
+    /// recognise and drop. Stack the 5-point instead and the position never
+    /// gets there: the highest point stays put, the lower points can only
+    /// bear off on an exact die, and the skip's second leg is unreachable.
+    /// </para>
+    /// </summary>
+    private static BoardState BearOffPosition()
+    {
+        var state = new BoardState();
+
+        state.Points[5] = 1;     // alone on the highest point
+        state.Points[4] = 3;
+        state.Points[3] = 3;
+        state.Points[2] = 4;
+        state.Points[1] = 4;
+
+        state.Points[19] = -3;   // opponent, home board, out of contact
+        state.Points[20] = -3;
+        state.Points[21] = -3;
+        state.Points[22] = -2;
+        state.Points[23] = -2;
+        state.Points[24] = -2;
+
+        state.RecalcHighPoint();
+        return state;
+    }
 
     /// <summary>
     /// Two checkers on the bar against a five-point board with only the

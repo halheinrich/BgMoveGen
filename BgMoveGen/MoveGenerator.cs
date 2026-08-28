@@ -178,11 +178,13 @@ public static class MoveGenerator
     /// <summary>
     /// Generate all legal plays for a non-doubles roll.
     /// Two passes: smallDie first (all plays kept), then bigDie first (skip
-    /// duplicates of pass-1 plays). Two duplicate shapes are avoided:
+    /// duplicates of pass-1 plays). Three duplicate shapes are avoided:
     /// same-checker plays where the smallDie-first path is also legal and
-    /// produces the same board state, and same-source-point plays (two
-    /// checkers leaving one point — including two bar entries), which pass 2
-    /// would re-emit move-for-move in the other order.
+    /// produces the same board state; same-source-point plays (two checkers
+    /// leaving one point — including two bar entries), which pass 2 would
+    /// re-emit move-for-move in the other order; and two bear-offs from
+    /// different points, where the encoding (point, 0) is the same whichever
+    /// die paid, so pass 1's pair and pass 2's pair are the same two moves.
     /// Enforces must-use-both-dice and must-use-larger-die rules.
     /// </summary>
     internal static List<Play> GenerateNonDoubles(BoardState state, int die1, int die2)
@@ -292,6 +294,17 @@ public static class MoveGenerator
                 Move? m1 = TryMakeMove(state, frPt1, toPt, bigDie);
                 if (m1.HasValue)
                 {
+                    // Does pass 1 build on the *identical* first move? Only a
+                    // bear-off can make that true: every other move encodes its
+                    // destination as FrPt - die, so the two dice give two
+                    // encodings, while a bear-off is (FrPt, 0) whichever die
+                    // paid for it. Where it is true the FrPt-ordering argument
+                    // that keeps different-point pairs apart collapses, because
+                    // both passes then build the same pair from the same first
+                    // move — see the second-leg check inside the loop.
+                    bool pass1SharesFirstMove =
+                        m1.Value.ToPt == 0 && ReproducedBy(state, m1.Value, smallDie);
+
                     state.ApplyMove(m1.Value);
                     int fr2 = frPt1 + 1; // allow same point
                     while (NextMove(state, smallDie, fr2, out Move m2))
@@ -333,6 +346,21 @@ public static class MoveGenerator
                                 }
                             }
                             // If smallInt <= 0, bear-off intermediate — not a dup
+                        }
+                        if (pass1SharesFirstMove && ReproducedBy(state, m2, bigDie))
+                        {
+                            // Two bear-offs from different points — the third
+                            // duplicate shape, and the only one where pass 1
+                            // emits this pair *move for move* rather than in the
+                            // other order. m1 is a bear-off that pass 1 also
+                            // plays, with smallDie; the state it leaves behind
+                            // is identical because the move is identical, so
+                            // pass 1 stands exactly here with bigDie still in
+                            // hand. This check asks whether bigDie bears m2's
+                            // checker off from here too. If it does, pass 1
+                            // already emitted {m1, m2}. Skip.
+                            fr2 = m2.FrPt;
+                            continue;
                         }
                         anyTwoMoves = true;
                         results.Add(Play.Create(m1.Value, m2));
@@ -417,6 +445,28 @@ public static class MoveGenerator
                 return new Move(frPt, toPt);
             return null;
         }
+    }
+
+    /// <summary>
+    /// Would <paramref name="die"/>, played from <paramref name="state"/> off
+    /// <paramref name="move"/>'s source point, produce exactly
+    /// <paramref name="move"/>?
+    ///
+    /// <para>
+    /// The question the non-doubles duplicate avoidance asks when it needs to
+    /// know whether the *other* pass's die assignment lands on the same
+    /// encoding rather than merely the same board state. Legality is
+    /// <see cref="TryMakeMove"/>'s — this only re-asks it with the other die,
+    /// so the two passes cannot drift apart on what a legal move is. Not valid
+    /// for bar entries (<c>FrPt == 25</c>); the callers are inside the no-bar
+    /// branch.
+    /// </para>
+    /// </summary>
+    private static bool ReproducedBy(BoardState state, Move move, int die)
+    {
+        int frPt = move.FrPt;
+        int toPt = frPt <= die ? 0 : frPt - die;
+        return TryMakeMove(state, frPt, toPt, die) is Move alt && alt == move;
     }
 
     // ── Public API ────────────────────────────────────────────────

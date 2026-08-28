@@ -375,6 +375,32 @@ public class ReferenceCorrectnessTests
             $"Missing: {missingFromOpt}, Extra: {extraInOpt}");
     }
 
+    [Fact]
+    public void Optimized_MatchesReference_AcrossSyntheticPositions()
+    {
+        // The InlineData rows above are hand-picked boards. This is the
+        // breadth counterpart, and specifically the guard on the avoidance
+        // dedup: every skip pass 2 makes is a claim that pass 1 already
+        // emitted the play, and the failure mode of a wrong skip is a *missing*
+        // legal play — invisible to a distinctness pin, which only ever
+        // complains about too many. Ground truth is the brute-force reference.
+        foreach ((int index, int[] mop) in SyntheticPositions.Corpus(1_000).Index())
+        {
+            foreach ((int die1, int die2) in SyntheticPositions.AllRolls())
+            {
+                var state = BoardState.FromMop(mop);
+
+                var refStates = GetBoardStates(state, MoveGenerator.Reference_GeneratePlays(state, die1, die2));
+                var optStates = GetBoardStates(state, MoveGenerator.GeneratePlays(state, die1, die2));
+
+                Assert.True(refStates.SetEquals(optStates),
+                    $"Position {index} {die1}-{die2}: ref={refStates.Count} states, " +
+                    $"opt={optStates.Count} states, missing={refStates.Except(optStates).Count()}, " +
+                    $"extra={optStates.Except(refStates).Count()}.");
+            }
+        }
+    }
+
     private static BoardState CreatePosition(string name) => name switch
     {
         "standard" => BoardState.Standard(),
@@ -704,6 +730,74 @@ public class IsLegalPlayTests
                 Assert.False(plays[i] == plays[j],
                     $"Candidates {i} {Raw(plays[i])} and {j} {Raw(plays[j])} " +
                     $"are canonically equal for {die1}-{die2}.");
+    }
+
+    [Fact]
+    public void GeneratePlays_TwoDieBearOff_EmitsTheOnePlayOnce()
+    {
+        // The minimal counterexample to the opening board's distinctness: two
+        // on-roll checkers, on the 5- and the 4-point, nothing else, roll 6-5.
+        // Each die bears one checker off, and a bear-off encodes as
+        // (point, 0) whichever die paid for it — so both die assignments
+        // build the identical move pair, and pass 2's order-duplicate
+        // avoidance, which compares moves rather than dice, used to miss it.
+        // One play, one candidate.
+        var mop = new int[26];
+        mop[5] = 1;
+        mop[4] = 1;
+
+        var plays = MoveGenerator.GeneratePlays(BoardState.FromMop(mop), 6, 5);
+
+        var only = Assert.Single(plays);
+        Assert.Equal(2, only.Count);
+        Assert.Equal(MoveGenerator.GeneratePlays(BoardState.FromMop(mop), 5, 6).Count, plays.Count);
+        Assert.True(MoveGenerator.IsLegalPlay(BoardState.FromMop(mop), only, 6, 5));
+    }
+
+    [Fact]
+    public void GeneratePlays_CandidatesAreCanonicallyDistinct_AcrossSyntheticPositions()
+    {
+        // The opening-board theory above pins one board. This pins breadth:
+        // the whole deterministic corpus crossed with all 21 rolls. The
+        // opening board never reaches a bear-off, so it could not have caught
+        // the two-die bear-off duplicate; half of this corpus is drawn inside
+        // the home board precisely so it can.
+        var distinct = new HashSet<Play>();
+        foreach ((int index, int[] mop) in SyntheticPositions.Corpus(4_000).Index())
+        {
+            foreach ((int die1, int die2) in SyntheticPositions.AllRolls())
+            {
+                var plays = MoveGenerator.GeneratePlays(BoardState.FromMop(mop), die1, die2);
+
+                // Play.GetHashCode is canonical (it hashes ToCanonical), so a
+                // set does the whole check in one pass; the quadratic scan runs
+                // only to name the offending pair once something is wrong.
+                distinct.Clear();
+                foreach (var play in plays)
+                    distinct.Add(play);
+                if (distinct.Count == plays.Count)
+                    continue;
+
+                for (int i = 0; i < plays.Count; i++)
+                    for (int j = i + 1; j < plays.Count; j++)
+                        Assert.False(plays[i] == plays[j],
+                            $"Position {index} ({Mop(mop)}) {die1}-{die2}: candidates " +
+                            $"{i} {Raw(plays[i])} and {j} {Raw(plays[j])} are canonically equal.");
+
+                Assert.Fail($"Position {index} ({Mop(mop)}) {die1}-{die2}: " +
+                            $"{plays.Count} candidates collapse to {distinct.Count} " +
+                            "under canonical equality, but no pair compares equal — " +
+                            "Play equality and Play.GetHashCode have drifted apart.");
+            }
+        }
+    }
+
+    private static string Mop(int[] mop)
+    {
+        var parts = new List<string>();
+        for (int i = 0; i < mop.Length; i++)
+            if (mop[i] != 0) parts.Add($"{i}:{mop[i]}");
+        return string.Join(" ", parts);
     }
 
     private static string Raw(Play p)

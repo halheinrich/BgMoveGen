@@ -55,10 +55,12 @@ BgMoveGen.Tests/
   MoveNotationFormatterTests.cs
   MoveEntryStateTests.cs
   InteropTests.cs
+  SyntheticPositions.cs        — deterministic seed-generated board corpus
+                                 shared by the breadth sweeps
 BgMoveGen.Benchmarks/
   BgMoveGen.Benchmarks.csproj
   Program.cs                  — BenchmarkSwitcher entry point
-  MoveGenerationBenchmarks.cs — GeneratePlays across the four play-assembly
+  MoveGenerationBenchmarks.cs — GeneratePlays across the five play-assembly
                                 shapes, plus the load canary; see Benchmarks
                                 below
 ```
@@ -97,19 +99,38 @@ Two passes iterating `FrPt` from rearmost down:
   `FrPt`, use `smallDie` for the first move and `bigDie` for the second
   (with `FrPt2 <= FrPt1`).
 - **Pass 2 (bigDie first):** at each `FrPt`, use `bigDie` first and
-  `smallDie` second. Two duplicate shapes are skipped. *Same-checker* plays
+  `smallDie` second. Three duplicate shapes are skipped. *Same-checker* plays
   where (a) both intermediates are on-board, (b) the smallDie intermediate
   is unblocked, and (c) neither intermediate has an opponent blot — those
   are exact duplicates of Pass 1. *Same-source-point* plays (the smallDie
   move leaves the same point the bigDie move just left — including two bar
   entries) — Pass 1 already emitted that pair in the other order, and the
   orders are always interchangeable: the destinations differ, so neither
-  move affects the other's legality.
+  move affects the other's legality. *Two bear-offs from different points* —
+  see below.
 
-Two-checker plays from *different* points are never duplicated because the
-`FrPt` ordering constraint is symmetric — the same pair appears the same way
-in both passes. Both passes enforce must-use-both-dice and
-must-use-larger-die.
+Two-checker plays from *different* points are, with one exception, never
+duplicated: the `FrPt` ordering constraint is symmetric, so a pair from
+points `A > B` appears as (smallDie from `A`, bigDie from `B`) in Pass 1 and
+as (bigDie from `A`, smallDie from `B`) in Pass 2 — four different moves,
+because a move's destination is `FrPt - die` and the two dice differ.
+
+The exception is the bear-off, which encodes as `(FrPt, 0)` whichever die
+paid for it. When both moves bear off, the two passes build the *same two
+moves*, and the ordering argument buys nothing. Pass 2 therefore also asks,
+per candidate: is my first move one Pass 1 would have made with `smallDie`
+(true only for a bear-off), and if so, would `bigDie` reproduce my second
+move from the state that first move leaves? Both yes means Pass 1 already
+emitted this pair — skip. The two legality questions go back through
+`TryMakeMove`, so the passes cannot drift apart on what a legal move is.
+This was the [halheinrich/backgammon#141] defect: every emitted play was
+legal and the distinct set was right, but a two-die bear-off of two checkers
+(checkers on the 5- and 4-point, roll 6-5, is the minimal case) came out
+twice.
+
+Both passes enforce must-use-both-dice and must-use-larger-die.
+
+[halheinrich/backgammon#141]: https://github.com/halheinrich/backgammon/issues/141
 
 ### NextMove iterator
 
@@ -238,6 +259,16 @@ pip-floor retry loop). BgMoveGen exposes it through the
   harness comparing optimized `GeneratePlays` to `Reference_GeneratePlays`
   by board-state set equality. Extended by adding `[InlineData]` rows; the
   default set covers all 21 opening rolls.
+- `SyntheticPositions` — a deterministic, seed-generated corpus of board
+  positions, half of them inside the home board. Nothing gating may read
+  `TestData/`, so breadth comes from here. Two sweeps cross it with all 21
+  rolls: `Optimized_MatchesReference_AcrossSyntheticPositions` (1,000
+  positions against the reference — the guard on the avoidance dedup, whose
+  failure mode is a *missing* play) and
+  `GeneratePlays_CandidatesAreCanonicallyDistinct_AcrossSyntheticPositions`
+  (4,000 positions, 84,000 pairs — the guard on emitting one play twice).
+  The two are complements: the first only ever notices too few candidates,
+  the second only ever notices too many.
 - Test categories: apply/undo round-trip; single-move generation (bar
   entry, regular, bear-off exact and overshoot, ordering); reference
   correctness; `GenerateStates` / `EnumerateStates` API; `IsLegalPlay` /
@@ -245,7 +276,8 @@ pip-floor retry loop). BgMoveGen exposes it through the
   throw, throw-before-mutate state preservation, dice-order invariance,
   closed-out empty-pass case, hit-sensitive rejection of mis-encoded hits,
   decomposed-encoding acceptance, canonicalize-then-apply, candidate-list
-  canonical distinctness); performance benchmarks; interop (successor
+  canonical distinctness on the opening board, on the two-die bear-off, and
+  across the synthetic corpus); performance benchmarks; interop (successor
   count, flip correctness, off-count tracking, checker conservation, pass
   detection, Bg960 conservation and seed reproducibility); MoveEntryState
   click-by-click assembly.
@@ -254,14 +286,15 @@ pip-floor retry loop). BgMoveGen exposes it through the
 
 `BgMoveGen.Benchmarks` is a BenchmarkDotNet harness over the public
 `GeneratePlays` entry point — the surface BgRLEngine drives through interop,
-and the one whose cost matters. Four cases cover the distinct play-assembly
-shapes; the fifth row is not a generator measurement at all:
+and the one whose cost matters. Five cases cover the distinct play-assembly
+shapes; the sixth row is not a generator measurement at all:
 
 | Benchmark | Exercises |
 |---|---|
 | `DoublesFullDepth` | 3-3 from the opening — every branch reaches depth four |
 | `DoublesPartialDepth` | 4-4 onto a five-point board with two on the bar — the reduced-depth fallbacks |
 | `NonDoubles` | 6-4 from the opening — the two-pass avoidance-dedup path |
+| `NonDoublesBearOff` | 6-5 on a full home board — that path where moves encode as `(point, 0)` |
 | `AllOpeningRolls` | all 21 rolls from the opening — the aggregate signal |
 | `SentinelNotationFormat` | notation formatting of a fixed play set — the load canary, not a generator path |
 
@@ -412,6 +445,14 @@ int get_version();
   from the *same-source-point* skip (two checkers leaving one point, or two
   bar entries), which is unconditional — those orderings are always
   interchangeable.
+- **A bear-off's encoding does not name its die.** `Move(FrPt, 0)` is what
+  both dice produce, so anything that reasons about die orderings by
+  comparing *moves* is blind on bear-offs. That is why Pass 2 needs a third
+  skip, and it is the general trap: two plays can be move-for-move identical
+  while having been built from opposite die assignments. Distinctness pins on
+  the opening board cannot see this shape at all — the opening position never
+  reaches a bear-off — so the synthetic corpus that backs the sweeps
+  (`SyntheticPositions`) draws half its positions inside the home board.
 - **Mirror conflicts in Bg960 validation.** Point `i` and point `25 - i`
   can never both be made by the player. The constraint lives inside
   `BoardState.Bg960` (BgDataTypes_Lib); BgMoveGen consumes the result.
