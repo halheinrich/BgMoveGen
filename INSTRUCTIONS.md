@@ -322,17 +322,6 @@ a non-interactive shell:
 dotnet run -c Release --project BgMoveGen.Benchmarks -- --filter '*'
 ```
 
-Run it through the **project**, not the solution. `dotnet build BgMoveGen.slnx
--c Release` does not propagate the configuration across the out-of-solution
-`ProjectReference`: it builds BgDataTypes_Lib in *Debug* and copies that
-unoptimized assembly into the Release output, so a run staged that way
-measures the dependency's Debug codegen. The `--project` form above
-propagates Release correctly. When a measurement turns on BgDataTypes_Lib
-codegen — `Play` construction does — check the copied
-`BgDataTypes_Lib.dll` in the benchmark's output against the one under
-`BgDataTypes_Lib/BgDataTypes_Lib/bin/Release/net10.0/` before believing
-the numbers; if it matches `bin/Debug/` instead, the run is void.
-
 Excluded from `dotnet test` via `IsTestProject=false` in its csproj — a run
 takes minutes and asserts nothing, so it is measured on demand, never as part
 of the suite.
