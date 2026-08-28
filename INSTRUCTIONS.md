@@ -294,7 +294,7 @@ shapes; the sixth row is not a generator measurement at all:
 | `DoublesFullDepth` | 3-3 from the opening — every branch reaches depth four |
 | `DoublesPartialDepth` | 4-4 onto a five-point board with two on the bar — the reduced-depth fallbacks |
 | `NonDoubles` | 6-4 from the opening — the two-pass avoidance-dedup path |
-| `NonDoublesBearOff` | 6-5 on a full home board — that path where moves encode as `(point, 0)` |
+| `NonDoublesBearOff` | 6-5 on a home board with a lone checker on the highest point — that path where moves encode as `(point, 0)` |
 | `AllOpeningRolls` | all 21 rolls from the opening — the aggregate signal |
 | `SentinelNotationFormat` | notation formatting of a fixed play set — the load canary, not a generator path |
 
@@ -302,6 +302,24 @@ shapes; the sixth row is not a generator measurement at all:
 this generator is designed around: the documented invariant is zero allocation
 in the recursion, with only the result `List<Play>` and its backing array on
 the heap.
+
+**`NonDoublesBearOff` closes a blind spot, and its position is load-bearing.**
+Until [halheinrich/backgammon#141] the harness could not reach a bear-off at
+all: the opening position has checkers on the 24-point, and the partial-depth
+position has two on the bar. A generator change confined to bear-off encoding
+therefore measured as pure parity on every row, which is indistinguishable
+from a change that costs nothing. The row's position is not simply "a home
+board" — it puts a **lone** checker on the highest occupied point, and the
+skip it exists to measure is unreachable without that. Under 6-5 the lone
+5-point checker bears off either way (exactly with the 5, as the highest point
+with the 6), and taking it drops the highest point to the 4, which the
+remaining die then bears off — the same two moves from both die assignments,
+which is the pair Pass 2 has to recognise. Stack the 5-point instead and the
+highest point never moves, the lower points can only bear off on an exact die,
+and the branch is walked past rather than entered. When editing this fixture,
+re-verify the same way the row was: the position must yield two candidates
+against a generator without the skip and one with it. A row that no longer
+enters the branch reports parity for the wrong reason.
 
 `SentinelNotationFormat` is not a generator measurement. It is a load canary
 for the case where the one-process sibling-benchmark form is unavailable —
@@ -313,6 +331,29 @@ own run, on a path no generator change can reach, so a canary that holds
 across runs licenses reading the generator deltas and a canary that drifts
 condemns the whole set. Alternate at least A, B, A; on drift, re-run rather
 than average. See the contention Pitfall.
+
+**The canary is necessary, not sufficient — and when it runs out, take the
+minimum per row across runs.** A canary that drifts still condemns its set;
+what [halheinrich/backgammon#141] added is that a canary that *holds* does not
+by itself license the deltas. Measured there over eight alternating runs: two
+runs of the **same unmodified binary** agreed on the canary to within 2% while
+differing **1.6x** on `DoublesFullDepth` — 840 ns against 1,363 ns. External
+CPU load on this machine is bursty and does not fall evenly on every row, so
+the canary can sit in a quiet window while a generator row sits in a loud one.
+Three of those eight runs were condemned by canary drift outright, and no
+adjacent A/B pair survived both tests.
+
+The fallback that does work, and the one that carried that gate: **read the
+best (minimum) figure for each row across all runs of each variant, and
+compare those.** It rests on the same property the canary does — contention
+only ever adds time, so the smallest figure a row ever posted is its closest
+approach to the uncontended one, and taking it per row costs nothing when the
+runs happen to be clean. Two further reads make it safe. Keep at least one row
+the change under test **cannot** reach (the doubles rows, for a non-doubles
+change) as an in-run control: the spread those post is the noise floor, and a
+touched row inside it is parity. And read `Allocated` first regardless — it is
+immune to load, so a byte-identical allocation column is the one part of the
+gate that contention cannot soften.
 
 Run it in Release. `Program.cs` uses `BenchmarkSwitcher`, which *requires* a
 selection — without `--filter` it stops and prompts, so the bare command hangs
@@ -521,8 +562,14 @@ int get_version();
   matter *in its own run*, so it reports whether the machine held still
   between them. Take the deltas only if the canary agrees across runs inside
   its own error bars; if it drifts, the set is contaminated — re-run, never
-  average. Sequential "measure, edit, measure" with nothing watching the
-  machine remains not a valid comparison here.
+  average. But do not treat an agreeing canary as proof either: it has been
+  measured holding to within 2% across two runs of the *same binary* whose
+  `DoublesFullDepth` differed 1.6x, because the load here is bursty and does
+  not fall evenly on every row. When re-running keeps producing sets that fail
+  one test or the other, fall back to the minimum per row across runs — see
+  **Benchmarks** for that ruling and the two reads that make it safe.
+  Sequential "measure, edit, measure" with nothing watching the machine
+  remains not a valid comparison here.
 - **`IsLegalPlay` and `ApplyPlay` are not hot-path.** Both re-enumerate
   via `GeneratePlays`. Acceptable for turn-boundary validation; for
   inner-loop repeated checks, drive the generator directly.
