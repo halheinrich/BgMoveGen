@@ -30,40 +30,44 @@ diagram rendering, filters) without dragging them through this library.
 BgRLEngine is a downstream consumer via the NativeAOT interop surface, but
 that arrow points outward — BgMoveGen knows nothing about it.
 
-## Directory tree
+## Layout
 
-```
-BgMoveGen.slnx
-Directory.Packages.props
-BgMoveGen/
-  BgMoveGen.csproj
-  MoveGenerator.cs       — public: GeneratePlays / IsLegalPlay / ApplyPlay.
-                           Internal: GenerateStates / EnumerateStates
-                           (RL-successor wrappers, own-tests-only) /
-                           NextMove / SingleMoves (Span and List overloads) /
-                           GenerateDoubles / GenerateNonDoubles /
-                           Reference_GeneratePlays
-  MoveNotationFormatter.cs — Play → standard notation ("8/5(2)", "24/18*")
-  MoveEntryState.cs      — stateful one-click Play assembly;
-                           ClickOutcome enum (Illegal / MoveCommitted /
-                           PlayCompleted)
-  Interop.cs             — internal NativeAOT export surface (whole class
-                           is internal) + blittable BgBoardState
-BgMoveGen.Tests/
-  BgMoveGen.Tests.csproj
-  MoveGeneratorTests.cs
-  MoveNotationFormatterTests.cs
-  MoveEntryStateTests.cs
-  InteropTests.cs
-  SyntheticPositions.cs        — deterministic seed-generated board corpus
-                                 shared by the breadth sweeps
-BgMoveGen.Benchmarks/
-  BgMoveGen.Benchmarks.csproj
-  Program.cs                  — BenchmarkSwitcher entry point
-  MoveGenerationBenchmarks.cs — GeneratePlays across the five play-assembly
-                                shapes, plus the load canary; see Benchmarks
-                                below
-```
+Three projects under `BgMoveGen.slnx`, governed by repo-root
+`Directory.Build.props` (TFM, nullable, implicit usings,
+`TreatWarningsAsErrors`, XML doc generation) and `Directory.Packages.props`
+(Central Package Management — no inline `Version=` anywhere).
+
+**`BgMoveGen/`** — the library, and the one shipped surface: published to a
+NativeAOT DLL, and declared `IsAotCompatible`, so the trim, AOT and
+single-file analyzers run in its build. Four areas:
+
+- **Generation** — `MoveGenerator`. Public: `GeneratePlays`, and the
+  validating turn-boundary pair `IsLegalPlay` / `ApplyPlay`. Internal: the
+  successor-state wrappers `GenerateStates` / `EnumerateStates`
+  (own-tests-only), the single-move primitives `NextMove` and `SingleMoves`
+  (`Span` and `List` overloads), the two optimized paths `GenerateDoubles` /
+  `GenerateNonDoubles`, and `Reference_GeneratePlays`, the brute-force ground
+  truth the tests hold them to.
+- **Notation** — `MoveNotationFormatter`: a `Play` rendered as standard
+  notation (`8/5(2)`, `24/18*`); display only, over BgDataTypes_Lib's
+  canonical chain form.
+- **Click entry** — `MoveEntryState`: stateful one-click `Play` assembly
+  for board UIs, reporting each click as a `ClickOutcome` (`Illegal` /
+  `MoveCommitted` / `PlayCompleted`).
+- **Native interop** — `Interop`: the NativeAOT export surface, `internal`
+  as a whole, and the blittable `BgBoardState` it marshals across the
+  boundary. The only unsafe code in the library, and the reason the project
+  grants `AllowUnsafeBlocks`.
+
+**`BgMoveGen.Tests/`** — xUnit, one file per library area (generation,
+notation, click entry, interop), plus `SyntheticPositions`: the
+deterministic, seed-generated board corpus the breadth sweeps share (see
+Validation below).
+
+**`BgMoveGen.Benchmarks/`** — a BenchmarkDotNet harness over
+`GeneratePlays`: `Program.cs` is the `BenchmarkSwitcher` entry point, and
+`MoveGenerationBenchmarks` measures the five play-assembly shapes plus the
+load canary. Not a test project; run on demand (see Benchmarks below).
 
 ## Architecture
 
