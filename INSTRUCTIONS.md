@@ -388,6 +388,11 @@ pass is represented as a single successor identical to the input board
 and inherit that behavior; both are `internal` (own-tests-only, no
 external consumer) and would be widened to `public` if one appears.
 
+Every candidate `GeneratePlays` returns is canonically distinct from every
+other under `Play` equality, so a consumer may treat `Count == 1` as "no
+choice"; pinned by `GeneratePlays_CandidatesAreCanonicallyDistinct` and
+`GeneratePlays_CandidatesAreCanonicallyDistinct_AcrossSyntheticPositions`.
+
 `IsLegalPlay` matches by canonical `Play` equality — order- and
 decomposition-insensitive, hit-sensitive. `ApplyPlay` is the validating
 wrapper around `BoardState.ApplyPlay`; on a match it applies the generator's

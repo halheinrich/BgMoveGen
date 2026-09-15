@@ -481,6 +481,18 @@ public static class MoveGenerator
     /// empty list. Callers must handle a single "pass" candidate; the returned
     /// list is never <c>Count == 0</c>.
     /// </para>
+    ///
+    /// <para>
+    /// <b>Canonical distinctness.</b> Every candidate is canonically distinct
+    /// from every other: no two elements compare equal under <see cref="Play"/>
+    /// equality (order- and decomposition-insensitive, hit-sensitive — see
+    /// <see cref="CanonicalPlay"/>). A consumer may therefore treat
+    /// <c>Count == 1</c> as "no choice": the one candidate, pass or not, is the
+    /// only play. Pinned by <c>GeneratePlays_CandidatesAreCanonicallyDistinct</c>
+    /// (all 21 rolls on the opening board) and
+    /// <c>GeneratePlays_CandidatesAreCanonicallyDistinct_AcrossSyntheticPositions</c>
+    /// (84,000 position–roll pairs) in <c>MoveGeneratorTests</c>.
+    /// </para>
     /// </summary>
     public static List<Play> GeneratePlays(BoardState state, int die1, int die2)
     {
@@ -499,6 +511,12 @@ public static class MoveGenerator
     /// Inherits the no-legal-move convention of <see cref="GeneratePlays"/>: a
     /// dance / closed-out position yields a single successor (the input state,
     /// with the empty pass play applied — i.e. unchanged), never an empty list.
+    /// </para>
+    ///
+    /// <para>
+    /// Inherits its canonical-distinctness guarantee the same way: one successor
+    /// per candidate, so each successor is reached by a canonically distinct
+    /// play and <c>Count == 1</c> still means "no choice".
     /// </para>
     /// </summary>
     internal static List<BoardState> GenerateStates(BoardState state, int die1, int die2)
@@ -524,6 +542,12 @@ public static class MoveGenerator
     /// Inherits the no-legal-move convention of <see cref="GeneratePlays"/>: a
     /// dance / closed-out position yields exactly one state (the unchanged
     /// input), never an empty sequence.
+    /// </para>
+    ///
+    /// <para>
+    /// Inherits its canonical-distinctness guarantee the same way: one state per
+    /// candidate, so each state is reached by a canonically distinct play and a
+    /// sequence of exactly one state still means "no choice".
     /// </para>
     /// </summary>
     internal static IEnumerable<BoardState> EnumerateStates(BoardState state, int die1, int die2)
