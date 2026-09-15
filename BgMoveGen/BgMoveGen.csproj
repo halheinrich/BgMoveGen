@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <!-- Framework / nullable / usings / warnings-as-errors / doc-file are
        repo policy — see ..\Directory.Build.props. The two below are
@@ -10,6 +10,26 @@
   <PropertyGroup>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PublishAot>true</PublishAot>
+  </PropertyGroup>
+
+  <!-- This library's half of the trim gate (halheinrich/backgammon#197).
+       Two publishes ship this assembly: this project's own NativeAOT DLL, and
+       BgQuiz's trimmed WebAssembly client. IsAotCompatible declares it fit for
+       both, and is the superset of the sibling libraries' IsTrimmable +
+       EnableTrimAnalyzer pair — the SDK defaults IsTrimmable, EnableTrimAnalyzer,
+       EnableAotAnalyzer and EnableSingleFileAnalyzer from it. With the analyzers
+       in this build, under TreatWarningsAsErrors, a trim- or AOT-unsafe construct
+       is a build error in the change that introduces it, not a finding in either
+       publish.
+       PublishAot above already switches the three analyzers on at build time,
+       as a side effect of a publish setting; this states them as what the
+       library is, so they no longer ride on how it is published. What it adds
+       outright is the IsTrimmable assembly metadata, which the WebAssembly SDK's
+       partial trim mode reads to decide whether to trim this assembly at all.
+       Per-project deliberately — the test and benchmark projects are not
+       shipped surfaces. -->
+  <PropertyGroup>
+    <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
 
   <ItemGroup>
