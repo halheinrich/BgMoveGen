@@ -503,63 +503,57 @@ public static class MoveGenerator
     }
 
     /// <summary>
-    /// Generate all unique legal successor board states for a dice roll.
-    /// Convenience wrapper for consumers that only need resulting positions
-    /// (e.g., RL evaluation), not the move sequences.
+    /// The distinct board positions reachable by a complete legal play of
+    /// <paramref name="die1"/>, <paramref name="die2"/> from
+    /// <paramref name="state"/> — for consumers that choose among resulting
+    /// positions and need nothing of the plays that reach them.
     ///
     /// <para>
-    /// Inherits the no-legal-move convention of <see cref="GeneratePlays"/>: a
-    /// dance / closed-out position yields a single successor (the input state,
-    /// with the empty pass play applied — i.e. unchanged), never an empty list.
+    /// <b>Mover's frame.</b> Each board is the position immediately after the
+    /// mover's play, still from the mover's perspective: <i>no</i> flip is
+    /// applied. This differs from <see cref="BoardState.ApplyPlay"/> and from
+    /// the native <c>generate_successor_states</c> export, which both
+    /// re-express the board from the next mover's perspective.
     /// </para>
     ///
     /// <para>
-    /// Inherits its canonical-distinctness guarantee the same way: one successor
-    /// per candidate, so each successor is reached by a canonically distinct
-    /// play and <c>Count == 1</c> still means "no choice".
+    /// <b>Distinct by position.</b> One board per <see cref="GeneratePlays"/>
+    /// candidate, in candidate order, and no two boards are equal position for
+    /// position — a position reachable by several move sequences appears once,
+    /// so a consumer choosing among the results never weights one position
+    /// twice. <c>Count == 1</c> means "no choice". Pinned by
+    /// <c>GenerateResultingStates_BoardsAreDistinct_AcrossSyntheticPositions</c>
+    /// (4,000 positions × 21 rolls) in <c>MoveGeneratorTests</c>.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>No legal move.</b> A dance / closed-out position yields exactly one
+    /// board equal to <paramref name="state"/> — never an empty list, and never
+    /// <paramref name="state"/> itself.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Ownership.</b> The list is fully built before this method returns.
+    /// <paramref name="state"/> is left unchanged, and every returned
+    /// <see cref="BoardState"/> is an independent copy owned by the caller —
+    /// sharing no storage with <paramref name="state"/>, with another result,
+    /// or with anything BgMoveGen retains. The list interface is read-only;
+    /// the boards themselves are ordinary mutable <see cref="BoardState"/>s.
     /// </para>
     /// </summary>
-    internal static List<BoardState> GenerateStates(BoardState state, int die1, int die2)
+    public static IReadOnlyList<BoardState> GenerateResultingStates(BoardState state, int die1, int die2)
     {
         var plays = GeneratePlays(state, die1, die2);
-        var states = new List<BoardState>(plays.Count);
-        foreach (var play in plays)
+        var states = new BoardState[plays.Count];
+        for (int p = 0; p < plays.Count; p++)
         {
             var copy = state.Copy();
+            var play = plays[p];
             for (int i = 0; i < play.Count; i++)
                 copy.ApplyMove(play[i]);
-            states.Add(copy);
+            states[p] = copy;
         }
         return states;
-    }
-
-    /// <summary>
-    /// Lazily enumerate all unique legal successor board states for a dice roll.
-    /// Each yielded BoardState is an independent copy — safe to store or discard.
-    /// Allows early termination (e.g., alpha-beta pruning, first-legal-move).
-    ///
-    /// <para>
-    /// Inherits the no-legal-move convention of <see cref="GeneratePlays"/>: a
-    /// dance / closed-out position yields exactly one state (the unchanged
-    /// input), never an empty sequence.
-    /// </para>
-    ///
-    /// <para>
-    /// Inherits its canonical-distinctness guarantee the same way: one state per
-    /// candidate, so each state is reached by a canonically distinct play and a
-    /// sequence of exactly one state still means "no choice".
-    /// </para>
-    /// </summary>
-    internal static IEnumerable<BoardState> EnumerateStates(BoardState state, int die1, int die2)
-    {
-        var plays = GeneratePlays(state, die1, die2);
-        foreach (var play in plays)
-        {
-            var copy = state.Copy();
-            for (int i = 0; i < play.Count; i++)
-                copy.ApplyMove(play[i]);
-            yield return copy;
-        }
     }
 
     /// <summary>

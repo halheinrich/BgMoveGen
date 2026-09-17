@@ -41,10 +41,10 @@ Three projects under `BgMoveGen.slnx`, governed by repo-root
 NativeAOT DLL, and declared `IsAotCompatible`, so the trim, AOT and
 single-file analyzers run in its build. Four areas:
 
-- **Generation** — `MoveGenerator`. Public: `GeneratePlays`, and the
-  validating turn-boundary pair `IsLegalPlay` / `ApplyPlay`. Internal: the
-  successor-state wrappers `GenerateStates` / `EnumerateStates`
-  (own-tests-only), the single-move primitives `NextMove` and `SingleMoves`
+- **Generation** — `MoveGenerator`. Public: `GeneratePlays`, the
+  resulting-position view `GenerateResultingStates`, and the validating
+  turn-boundary pair `IsLegalPlay` / `ApplyPlay`. Internal: the single-move
+  primitives `NextMove` and `SingleMoves`
   (`Span` and `List` overloads), the two optimized paths `GenerateDoubles` /
   `GenerateNonDoubles`, and `Reference_GeneratePlays`, the brute-force ground
   truth the tests hold them to.
@@ -272,10 +272,17 @@ pip-floor retry loop). BgMoveGen exposes it through the
   `GeneratePlays_CandidatesAreCanonicallyDistinct_AcrossSyntheticPositions`
   (4,000 positions, 84,000 pairs — the guard on emitting one play twice).
   The two are complements: the first only ever notices too few candidates,
-  the second only ever notices too many.
+  the second only ever notices too many. A third,
+  `GenerateResultingStates_BoardsAreDistinct_AcrossSyntheticPositions`,
+  closes the gap between them: the reference sweep compares board *sets*,
+  which a repeated board survives, and canonical distinctness of plays does
+  not by itself imply distinctness of the boards they reach — so board
+  distinctness is compared position for position, never by hash.
 - Test categories: apply/undo round-trip; single-move generation (bar
   entry, regular, bear-off exact and overshoot, ordering); reference
-  correctness; `GenerateStates` / `EnumerateStates` API; `IsLegalPlay` /
+  correctness; `GenerateResultingStates` contract (final boards of the
+  candidates, mover's frame, no-legal-move copy, input untouched,
+  caller-owned copies, board distinctness); `IsLegalPlay` /
   `ApplyPlay` validation contract (legality round-trip, illegal-input
   throw, throw-before-mutate state preservation, dice-order invariance,
   closed-out empty-pass case, hit-sensitive rejection of mis-encoded hits,
@@ -379,6 +386,9 @@ of the suite.
 // Full play enumeration — for clients that need to animate or record moves.
 List<Play> plays = MoveGenerator.GeneratePlays(state, die1, die2);
 
+// Distinct positions after the mover's play, in the mover's frame (no flip).
+IReadOnlyList<BoardState> boards = MoveGenerator.GenerateResultingStates(state, die1, die2);
+
 // Validating turn-boundary primitives.
 bool legal = MoveGenerator.IsLegalPlay(state, play, die1, die2);
 MoveGenerator.ApplyPlay(state, play, die1, die2);   // throws on illegal play
@@ -386,11 +396,18 @@ MoveGenerator.ApplyPlay(state, play, die1, die2);   // throws on illegal play
 
 `GeneratePlays` enforces must-use-both-dice and must-use-larger-die. A
 pass is represented as a single successor identical to the input board
-(flipped by the interop layer). The successor-state wrappers
-`GenerateStates` (materialized list, for RL evaluation) and
-`EnumerateStates` (lazy iterator, for early termination) delegate to it
-and inherit that behavior; both are `internal` (own-tests-only, no
-external consumer) and would be widened to `public` if one appears.
+(flipped by the interop layer).
+
+`GenerateResultingStates` is the position-level view of the same candidate
+list, for consumers that choose among resulting positions and need nothing
+of the plays. One board per candidate,
+in candidate order, each the input with that play applied and **not
+flipped** — the mover's frame, unlike `BoardState.ApplyPlay` and the native
+`generate_successor_states`. No two boards are equal position for position,
+so no position is weighted twice; a pass yields one board equal to the
+input. The list is complete before the method returns, the input is
+untouched, and every board is an independent caller-owned copy — the list
+interface is read-only, the `BoardState`s are ordinary mutable boards.
 
 Every candidate `GeneratePlays` returns is canonically distinct from every
 other under `Play` equality, so a consumer may treat `Count == 1` as "no
@@ -468,8 +485,7 @@ int get_version();
 - **No-legal-move returns a pass, not an empty list.** For a dance /
   closed-out position, `GeneratePlays` returns a one-element list holding the
   empty pass `Play` (`Count == 0`) — never `Count == 0` on the list itself.
-  `GenerateStates` / `EnumerateStates` inherit this (one successor: the
-  unchanged input). Consumers must handle a single "pass" candidate, not an
+  `GenerateResultingStates` inherits this (one board, equal to the input). Consumers must handle a single "pass" candidate, not an
   empty collection; the C interop mirrors it (successor count always `>= 1`).
 - **Bearing-off overshoot.** Legal only from the highest occupied point in
   the home board (`HighPointOccupied`). The die must exceed `FrPt` *and*
@@ -508,9 +524,11 @@ int get_version();
   internalizing the class, republishing the NativeAOT DLL, and running
   BgRLEngine's pytest (green). Keep the surface `internal`; nothing about
   the native path needs it public.
-- **`EnumerateStates` yields fresh copies, not a shared buffer.** Every
-  yielded `BoardState` is an independent `Copy()` of the input; consumers
-  are free to retain or discard without further cloning.
+- **`GenerateResultingStates` is not a successor generator.** Its boards
+  are in the mover's frame; a consumer that needs the next mover's
+  perspective must flip (`FlippedCopy`) — and the native
+  `generate_successor_states`, despite the similar purpose, *does* flip.
+  Don't "fix" either to match the other: they serve different frames.
 - **Fixed-arity `Play.Create` is the spelling at the generator's
   play-assembly sites; the span-taking spellings are not.** BgDataTypes_Lib's
   intent-level construction surface (`Play.Create(m1, m2, m3, m4)`) reads

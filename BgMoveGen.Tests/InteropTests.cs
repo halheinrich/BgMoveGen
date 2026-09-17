@@ -1,4 +1,4 @@
-﻿using Xunit;
+using Xunit;
 using BgMoveGen;
 using BgDataTypes_Lib;
 using static BgMoveGen.Interop;
@@ -73,7 +73,7 @@ public unsafe class InteropTests
         }
     }
     [Fact]
-    public void SuccessorCount_MatchesGenerateStates()
+    public void SuccessorCount_MatchesGeneratePlays()
     {
         var state = BoardState.Standard();
         for (int d1 = 1; d1 <= 6; d1++)

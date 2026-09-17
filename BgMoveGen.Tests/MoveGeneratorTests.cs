@@ -409,68 +409,177 @@ public class ReferenceCorrectnessTests
     };
 }
 
-public class GenerateStatesTests
+public class GenerateResultingStatesTests
 {
-    [Theory]
-    [InlineData(3, 1)]
-    [InlineData(6, 5)]
-    [InlineData(2, 2)]
-    public void GenerateStates_MatchesGeneratePlays(int die1, int die2)
+    [Fact]
+    public void GenerateResultingStates_MatchesFinalBoardsOfGeneratePlays_AcrossSyntheticPositions()
     {
-        var state = BoardState.Standard();
-
-        var states = MoveGenerator.GenerateStates(state, die1, die2);
-        var plays = MoveGenerator.GeneratePlays(state, die1, die2);
-
-        Assert.Equal(plays.Count, states.Count);
-
-        // Each state should match applying the corresponding play
-        for (int i = 0; i < plays.Count; i++)
+        // The defining relation: board i is exactly the input with candidate
+        // i's moves applied — same count, same order, and HighPointOccupied
+        // carried along — across a corpus that reaches bar entry, hits and
+        // bear-offs, not only the opening board.
+        foreach ((int index, int[] mop) in SyntheticPositions.Corpus(1_000).Index())
         {
-            var expected = state.Copy();
-            for (int j = 0; j < plays[i].Count; j++)
-                expected.ApplyMove(plays[i][j]);
+            foreach ((int die1, int die2) in SyntheticPositions.AllRolls())
+            {
+                var state = BoardState.FromMop(mop);
+                var plays = MoveGenerator.GeneratePlays(state, die1, die2);
+                var states = MoveGenerator.GenerateResultingStates(state, die1, die2);
 
-            for (int p = 0; p < 26; p++)
-                Assert.Equal(expected.Points[p], states[i].Points[p]);
+                Assert.Equal(plays.Count, states.Count);
+                for (int i = 0; i < plays.Count; i++)
+                {
+                    var expected = state.Copy();
+                    for (int j = 0; j < plays[i].Count; j++)
+                        expected.ApplyMove(plays[i][j]);
+
+                    Assert.True(PointsComparer.Instance.Equals(expected, states[i]),
+                        $"Position {index} {die1}-{die2}: board {i} is not candidate {i} applied.");
+                    Assert.Equal(expected.HighPointOccupied, states[i].HighPointOccupied);
+                }
+            }
         }
     }
 
     [Fact]
-    public void GenerateStates_DoesNotMutateOriginal()
+    public void GenerateResultingStates_BoardsAreInMoversFrame_NotFlipped()
+    {
+        // Opening 3-1 cannot hit, so in the mover's frame every resulting board
+        // keeps the opponent's four stacks exactly where they started; a flip
+        // would move them to 25 - i. The canonical 8/5 6/5 must be present
+        // exactly as the mover sees it.
+        var state = BoardState.Standard();
+
+        var states = MoveGenerator.GenerateResultingStates(state, 3, 1);
+
+        foreach (var s in states)
+        {
+            Assert.Equal(-2, s.Points[1]);
+            Assert.Equal(-5, s.Points[12]);
+            Assert.Equal(-3, s.Points[17]);
+            Assert.Equal(-5, s.Points[19]);
+        }
+
+        var pointMade = state.Copy();
+        pointMade.Points[8] = 2;
+        pointMade.Points[6] = 4;
+        pointMade.Points[5] = 2;
+        pointMade.RecalcHighPoint();
+        Assert.Contains(states, s => PointsComparer.Instance.Equals(s, pointMade));
+    }
+
+    [Fact]
+    public void GenerateResultingStates_NoLegalMove_ReturnsSingleCopyEqualToInput()
+    {
+        // Closed out: on-roll has a bar checker, opponent holds 19..24.
+        var state = new BoardState();
+        state.Points[25] = 1;
+        for (int i = 19; i <= 24; i++) state.Points[i] = -2;
+        state.RecalcHighPoint();
+
+        var states = MoveGenerator.GenerateResultingStates(state, 6, 4);
+
+        var only = Assert.Single(states);
+        Assert.NotSame(state, only);
+        Assert.NotSame(state.Points, only.Points);
+        Assert.True(PointsComparer.Instance.Equals(state, only));
+        Assert.Equal(state.HighPointOccupied, only.HighPointOccupied);
+    }
+
+    [Theory]
+    [InlineData(3, 1)]
+    [InlineData(6, 5)]
+    [InlineData(2, 2)]
+    public void GenerateResultingStates_DoesNotMutateInput(int die1, int die2)
     {
         var state = BoardState.Standard();
         var original = state.Copy();
 
-        MoveGenerator.GenerateStates(state, 3, 1);
+        MoveGenerator.GenerateResultingStates(state, die1, die2);
 
-        for (int i = 0; i < 26; i++)
-            Assert.Equal(original.Points[i], state.Points[i]);
+        Assert.True(PointsComparer.Instance.Equals(original, state));
         Assert.Equal(original.HighPointOccupied, state.HighPointOccupied);
     }
 
     [Fact]
-    public void EnumerateStates_MatchesGenerateStates()
+    public void GenerateResultingStates_BoardsAreIndependentCallerOwnedCopies()
     {
+        // Ownership is the contract, not immutability: a caller may scribble
+        // on any returned board without reaching the input, another result,
+        // or a later call's results.
         var state = BoardState.Standard();
+        var original = state.Copy();
 
-        var list = MoveGenerator.GenerateStates(state, 4, 2);
-        var enumerated = MoveGenerator.EnumerateStates(state, 4, 2).ToList();
+        var states = MoveGenerator.GenerateResultingStates(state, 6, 5);
+        Assert.True(states.Count > 1);
+        var snapshot = states.Select(s => s.Copy()).ToList();
 
-        Assert.Equal(list.Count, enumerated.Count);
-        for (int i = 0; i < list.Count; i++)
-            for (int p = 0; p < 26; p++)
-                Assert.Equal(list[i].Points[p], enumerated[i].Points[p]);
+        for (int i = 0; i < states.Count; i++)
+        {
+            Assert.NotSame(state.Points, states[i].Points);
+            for (int j = i + 1; j < states.Count; j++)
+                Assert.NotSame(states[i].Points, states[j].Points);
+        }
+
+        foreach (int p in new[] { 0, 1, 6, 13, 25 })
+            states[0].Points[p] += 7;
+        states[0].HighPointOccupied = 0;
+
+        Assert.True(PointsComparer.Instance.Equals(original, state));
+        Assert.Equal(original.HighPointOccupied, state.HighPointOccupied);
+        for (int i = 1; i < states.Count; i++)
+            Assert.True(PointsComparer.Instance.Equals(snapshot[i], states[i]));
+
+        var again = MoveGenerator.GenerateResultingStates(state, 6, 5);
+        Assert.Equal(snapshot.Count, again.Count);
+        for (int i = 0; i < again.Count; i++)
+            Assert.True(PointsComparer.Instance.Equals(snapshot[i], again[i]));
     }
 
     [Fact]
-    public void EnumerateStates_CanShortCircuit()
+    public void GenerateResultingStates_BoardsAreDistinct_AcrossSyntheticPositions()
     {
-        var state = BoardState.Standard();
+        // Canonical distinctness of the plays does not by itself imply
+        // distinctness of the boards, and the reference sweep compares board
+        // *sets*, which a repeated board survives. This pins the property a
+        // consumer choosing among positions relies on: no position is
+        // returned — and so weighted — twice.
+        var distinct = new HashSet<BoardState>(PointsComparer.Instance);
+        foreach ((int index, int[] mop) in SyntheticPositions.Corpus(4_000).Index())
+        {
+            foreach ((int die1, int die2) in SyntheticPositions.AllRolls())
+            {
+                var states = MoveGenerator.GenerateResultingStates(BoardState.FromMop(mop), die1, die2);
 
-        // Take only the first state — should not throw
-        var first = MoveGenerator.EnumerateStates(state, 5, 3).First();
-        Assert.True(first.HighPointOccupied > 0);
+                distinct.Clear();
+                foreach (var s in states)
+                    distinct.Add(s);
+
+                Assert.True(distinct.Count == states.Count,
+                    $"Position {index} {die1}-{die2}: {states.Count} resulting boards " +
+                    $"collapse to {distinct.Count} distinct positions.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Position equality over the full 26-point array — never a hash alone, so
+    /// two distinct boards sharing a hash cannot read as one.
+    /// </summary>
+    private sealed class PointsComparer : IEqualityComparer<BoardState>
+    {
+        public static readonly PointsComparer Instance = new();
+
+        public bool Equals(BoardState? x, BoardState? y) =>
+            ReferenceEquals(x, y) ||
+            (x is not null && y is not null && x.Points.AsSpan().SequenceEqual(y.Points));
+
+        public int GetHashCode(BoardState obj)
+        {
+            var hc = new HashCode();
+            foreach (int p in obj.Points) hc.Add(p);
+            return hc.ToHashCode();
+        }
     }
 }
 
