@@ -42,7 +42,9 @@ NativeAOT DLL, and declared `IsAotCompatible`, so the trim, AOT and
 single-file analyzers run in its build. Four areas:
 
 - **Generation** — `MoveGenerator`. Public: `GeneratePlays`, the
-  resulting-position view `GenerateResultingStates`, and the validating
+  resulting-position view `GenerateResultingStates`, the paired view
+  `GenerateCandidatePlays` (each `Play` with its resulting board, as a
+  `CandidatePlay`), and the validating
   turn-boundary pair `IsLegalPlay` / `ApplyPlay`. Internal: the single-move
   primitives `NextMove` and `SingleMoves`
   (`Span` and `List` overloads), the two optimized paths `GenerateDoubles` /
@@ -282,7 +284,10 @@ pip-floor retry loop). BgMoveGen exposes it through the
   entry, regular, bear-off exact and overshoot, ordering); reference
   correctness; `GenerateResultingStates` contract (final boards of the
   candidates, mover's frame, no-legal-move copy, input untouched,
-  caller-owned copies, board distinctness); `IsLegalPlay` /
+  caller-owned copies, board distinctness); `GenerateCandidatePlays`
+  association (each candidate is the generator's play `i` in raw encoding
+  and `GenerateResultingStates`' board `i`, plus the same frame / pass /
+  input / ownership pins, and `Play` returned by value); `IsLegalPlay` /
   `ApplyPlay` validation contract (legality round-trip, illegal-input
   throw, throw-before-mutate state preservation, dice-order invariance,
   closed-out empty-pass case, hit-sensitive rejection of mis-encoded hits,
@@ -389,6 +394,10 @@ List<Play> plays = MoveGenerator.GeneratePlays(state, die1, die2);
 // Distinct positions after the mover's play, in the mover's frame (no flip).
 IReadOnlyList<BoardState> boards = MoveGenerator.GenerateResultingStates(state, die1, die2);
 
+// The same boards, each paired with the play that reaches it.
+IReadOnlyList<CandidatePlay> candidates = MoveGenerator.GenerateCandidatePlays(state, die1, die2);
+// candidates[i].Play, candidates[i].ResultingState
+
 // Validating turn-boundary primitives.
 bool legal = MoveGenerator.IsLegalPlay(state, play, die1, die2);
 MoveGenerator.ApplyPlay(state, play, die1, die2);   // throws on illegal play
@@ -408,6 +417,21 @@ so no position is weighted twice; a pass yields one board equal to the
 input. The list is complete before the method returns, the input is
 untouched, and every board is an independent caller-owned copy — the list
 interface is read-only, the `BoardState`s are ordinary mutable boards.
+
+`GenerateCandidatePlays` returns the same candidates with the association
+made explicit, for consumers that choose among resulting positions and must
+report the play reaching the chosen one: candidate `i` is `GeneratePlays`'
+play `i` (the generator's own encoding) and the board
+`GenerateResultingStates` returns at `i`. Every guarantee above carries
+over. Both methods build their boards through one private routine,
+`ResultingStateOf` — the single source of the play → board rule — so the
+two views cannot drift apart. `CandidatePlay` is a sealed class with an
+internal constructor: only BgMoveGen pairs a play with a board, and there
+is no `default` instance with a null board. It defines no value equality.
+`Play` is returned by value, so its stored copy cannot be modified;
+`ResultingState` is the caller's own mutable board, and mutating it breaks
+the association. Choosing among candidates, and breaking ties, is the
+consumer's decision.
 
 Every candidate `GeneratePlays` returns is canonically distinct from every
 other under `Play` equality, so a consumer may treat `Count == 1` as "no

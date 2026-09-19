@@ -546,14 +546,65 @@ public static class MoveGenerator
         var plays = GeneratePlays(state, die1, die2);
         var states = new BoardState[plays.Count];
         for (int p = 0; p < plays.Count; p++)
-        {
-            var copy = state.Copy();
-            var play = plays[p];
-            for (int i = 0; i < play.Count; i++)
-                copy.ApplyMove(play[i]);
-            states[p] = copy;
-        }
+            states[p] = ResultingStateOf(state, plays[p]);
         return states;
+    }
+
+    /// <summary>
+    /// Every legal candidate for a roll, each pairing the generator's
+    /// <see cref="Play"/> with the board that play produces — for consumers
+    /// that choose among resulting positions and must also report the play
+    /// that reaches the chosen one.
+    ///
+    /// <para>
+    /// <b>One call, one association.</b> Candidate <c>i</c> holds
+    /// <see cref="GeneratePlays"/>' candidate <c>i</c>, in the generator's own
+    /// encoding and in candidate order, and the board that play reaches — the
+    /// board <see cref="GenerateResultingStates"/> returns at the same index,
+    /// built by the same routine. Consumers never zip the two lists
+    /// themselves, and move generation runs once.
+    /// </para>
+    ///
+    /// <para>
+    /// Every other guarantee is <see cref="GenerateResultingStates"/>'s, with
+    /// the same meaning: <b>mover's frame</b> (no flip); boards distinct by
+    /// position, so the plays are distinct candidates and <c>Count == 1</c>
+    /// means "no choice"; a no-legal-move position yields one candidate holding
+    /// the empty play and a board equal to — never the same object as —
+    /// <paramref name="state"/>; the list is fully built before return;
+    /// <paramref name="state"/> is left unchanged; and every
+    /// <see cref="CandidatePlay.ResultingState"/> is an independent copy owned
+    /// by the caller, sharing no storage with <paramref name="state"/> or with
+    /// another candidate.
+    /// </para>
+    ///
+    /// <para>
+    /// Choosing among the candidates — and breaking ties — is the consumer's
+    /// decision; this method only enumerates them.
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<CandidatePlay> GenerateCandidatePlays(BoardState state, int die1, int die2)
+    {
+        var plays = GeneratePlays(state, die1, die2);
+        var candidates = new CandidatePlay[plays.Count];
+        for (int p = 0; p < plays.Count; p++)
+            candidates[p] = new CandidatePlay(plays[p], ResultingStateOf(state, plays[p]));
+        return candidates;
+    }
+
+    /// <summary>
+    /// The single source of the play → resulting-board rule behind
+    /// <see cref="GenerateResultingStates"/> and
+    /// <see cref="GenerateCandidatePlays"/>: a fresh copy of
+    /// <paramref name="state"/> with every move of <paramref name="play"/>
+    /// applied, in the mover's frame. <paramref name="state"/> is not touched.
+    /// </summary>
+    private static BoardState ResultingStateOf(BoardState state, in Play play)
+    {
+        var copy = state.Copy();
+        for (int i = 0; i < play.Count; i++)
+            copy.ApplyMove(play[i]);
+        return copy;
     }
 
     /// <summary>
