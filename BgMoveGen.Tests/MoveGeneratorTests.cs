@@ -773,6 +773,111 @@ public class GenerateCandidatePlaysTests
     }
 }
 
+public class GenerateSuccessorsTests
+{
+    // A sink the allocation pin's paths write, so no allocation can be elided.
+    private static object? _kept;
+
+    [Fact]
+    public void GenerateSuccessors_PairsEachGeneratedPlayWithTheBoardApplyPlayLeaves_AcrossSyntheticPositions()
+    {
+        // The whole contract: successor i carries GeneratePlays' play i in
+        // the generator's own encoding, and the position that play leads to
+        // seen from the next mover's side — the board BoardState.ApplyPlay
+        // leaves (the producer's rule, applied and flipped) and, equally, the
+        // tests' own replay flipped by the value. The positions are distinct.
+        var distinct = new HashSet<BoardPosition>();
+        foreach ((int index, int[] mop) in SyntheticPositions.Corpus(1_000).Index())
+        {
+            foreach ((int die1, int die2) in SyntheticPositions.AllRolls())
+            {
+                var state = BoardState.FromMop(mop);
+                var plays = MoveGenerator.GeneratePlays(state, die1, die2);
+                var successors = MoveGenerator.GenerateSuccessors(state, die1, die2);
+
+                Assert.Equal(plays.Count, successors.Count);
+                distinct.Clear();
+                for (int i = 0; i < plays.Count; i++)
+                {
+                    string where = $"Position {index} {die1}-{die2} successor {i}";
+                    Assert.True(plays[i].IsSameEncoding(successors[i].Play), $"{where}: play is not the generator's encoding.");
+
+                    var applied = state.Copy();
+                    applied.ApplyPlay(plays[i]);
+                    Assert.True(applied.ToPosition() == successors[i].Position,
+                        $"{where}: {successors[i].Position} is not the board ApplyPlay leaves, {applied.ToPosition()}.");
+                    Assert.True(Replay.PositionAfter(state, plays[i]).Flipped() == successors[i].Position,
+                        $"{where}: the position is not the play's, flipped.");
+
+                    distinct.Add(successors[i].Position);
+                }
+                Assert.True(distinct.Count == successors.Count,
+                    $"Position {index} {die1}-{die2}: {successors.Count} successors reach {distinct.Count} positions.");
+            }
+        }
+    }
+
+    [Fact]
+    public void GenerateSuccessors_NoLegalMove_ReturnsSinglePassWithTheInputFlipped()
+    {
+        var state = Boards.ClosedOut();
+
+        var only = Assert.Single(MoveGenerator.GenerateSuccessors(state, 6, 4));
+
+        Assert.Equal(0, only.Play.Count);
+        Assert.Equal(state.ToPosition().Flipped(), only.Position);
+    }
+
+    [Theory]
+    [InlineData(3, 1)]
+    [InlineData(6, 5)]
+    [InlineData(2, 2)]
+    public void GenerateSuccessors_DoesNotMutateInput(int die1, int die2)
+    {
+        var state = BoardState.Standard();
+
+        MoveGenerator.GenerateSuccessors(state, die1, die2);
+
+        Assert.Equal(BoardPosition.Standard, state.ToPosition());
+        Assert.Equal(BoardState.Standard().HighPointOccupied, state.HighPointOccupied);
+    }
+
+    [Theory]
+    [InlineData(6, 4)]   // the two-pass non-doubles path
+    [InlineData(3, 3)]   // full-depth doubles
+    [InlineData(6, 6)]   // doubles whose continuations the opponent blocks
+    public void GenerateSuccessors_AllocatesOnlyItsList_NothingPerSuccessor(int die1, int die2)
+    {
+        // Successors are values: the call allocates what GeneratePlays does
+        // plus the one Successor array it returns, to the byte. A board copied
+        // or built per successor, or a successor boxed, would show here.
+        var state = BoardState.Standard();
+        int count = MoveGenerator.GeneratePlays(state, die1, die2).Count;
+        Assert.True(count > 1);
+
+        long successors = AllocationProbe.SteadyStateBytes(() => _kept = MoveGenerator.GenerateSuccessors(state, die1, die2));
+        long plays = AllocationProbe.SteadyStateBytes(() => _kept = MoveGenerator.GeneratePlays(state, die1, die2));
+        long array = AllocationProbe.SteadyStateBytes(() => _kept = new Successor[count]);
+
+        Assert.Equal(plays + array, successors);
+    }
+
+    [Fact]
+    public void Successor_HasNoEquality()
+    {
+        // It holds a Play, which has none (halheinrich/backgammon#273, ruling
+        // 1): no == to compile, and the runtime routes throw rather than fall
+        // back to a field-wise comparison of the play.
+        var successor = MoveGenerator.GenerateSuccessors(BoardState.Standard(), 6, 4)[0];
+
+        Assert.Null(typeof(Successor).GetMethod("op_Equality"));
+        Assert.Null(typeof(Successor).GetMethod("op_Inequality"));
+        Assert.Throws<NotSupportedException>(() => successor.Equals((object)successor));
+        Assert.Throws<NotSupportedException>(() => successor.GetHashCode());
+        Assert.Throws<NotSupportedException>(() => new HashSet<Successor> { successor });
+    }
+}
+
 public class PerformanceTests
 {
     [Fact]

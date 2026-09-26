@@ -583,6 +583,61 @@ public static class MoveGenerator
     }
 
     /// <summary>
+    /// Every legal play for a roll with its successor position: the position
+    /// the play leads to, seen from the next mover's side — for consumers that
+    /// choose a play by evaluating the positions it leaves the opponent (a
+    /// one-ply agent), and must report the play they chose.
+    ///
+    /// <para>
+    /// <b>Next mover's frame.</b> Each position is the input with the play
+    /// applied, then flipped (<see cref="BoardPosition.Flipped"/>): the board
+    /// <see cref="BoardState.ApplyPlay"/> leaves, as a value, and the board the
+    /// native <c>generate_successor_states</c> writes, which computes it by the
+    /// same rule. This is the counterpart of
+    /// <see cref="GenerateResultingStates"/> and
+    /// <see cref="GenerateCandidatePlays"/>, which stay in the mover's frame.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>One call, one association.</b> Successor <c>i</c> holds
+    /// <see cref="GeneratePlays"/>' candidate <c>i</c>, in the generator's own
+    /// encoding and in candidate order, and the position that play leads to.
+    /// The positions are distinct — the plays reach distinct positions, and the
+    /// flip is one-to-one — so <c>Count == 1</c> means "no choice". A
+    /// no-legal-move position yields one successor: the empty play, with the
+    /// input flipped.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Values.</b> A <see cref="Successor"/> holds its play and its position
+    /// inline, so the list is one array beyond <see cref="GeneratePlays"/>' own,
+    /// and a successor costs no allocation: no board is copied or built. The
+    /// list is complete before the method returns, and
+    /// <paramref name="state"/> is left unchanged.
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<Successor> GenerateSuccessors(BoardState state, int die1, int die2)
+    {
+        var plays = GeneratePlays(state, die1, die2);
+        var successors = new Successor[plays.Count];
+        for (int p = 0; p < plays.Count; p++)
+            successors[p] = new Successor(plays[p], SuccessorPositionOf(state, plays[p]));
+        return successors;
+    }
+
+    /// <summary>
+    /// The successor rule, stated once: the position a generated
+    /// <paramref name="play"/> reaches from <paramref name="state"/>
+    /// (<see cref="ResultingPositionOf"/>), flipped to the next mover's side by
+    /// <see cref="BoardPosition.Flipped"/>, the one statement of the flip.
+    /// Behind <see cref="GenerateSuccessors"/> and the native export, so the
+    /// two cannot disagree. Allocation-free; <paramref name="state"/> is left
+    /// as it was.
+    /// </summary>
+    internal static BoardPosition SuccessorPositionOf(BoardState state, in Play play)
+        => ResultingPositionOf(state, in play).Flipped();
+
+    /// <summary>
     /// The board behind <see cref="GenerateResultingStates"/> and
     /// <see cref="GenerateCandidatePlays"/>: a new board holding the position
     /// <paramref name="play"/> reaches (<see cref="ResultingPositionOf"/>), in

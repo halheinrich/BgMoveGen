@@ -32,8 +32,12 @@
     <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
 
+  <!-- The tests reach the internals they pin; the benchmarks reach the
+       native export's internal core, the hot path BgRLEngine drives
+       (NativeExportBenchmarks). -->
   <ItemGroup>
     <InternalsVisibleTo Include="BgMoveGen.Tests" />
+    <InternalsVisibleTo Include="BgMoveGen.Benchmarks" />
   </ItemGroup>
 
   <ItemGroup>

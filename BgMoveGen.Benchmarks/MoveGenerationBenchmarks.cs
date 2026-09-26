@@ -93,6 +93,17 @@ public class MoveGenerationBenchmarks
     public List<Play> NonDoublesBearOff() => MoveGenerator.GeneratePlays(_bearOff, 6, 5);
 
     /// <summary>
+    /// <see cref="NonDoubles"/>' roll and position through
+    /// <see cref="MoveGenerator.GenerateSuccessors"/>: the generator plus each
+    /// candidate's successor position. The difference from
+    /// <see cref="NonDoubles"/> is the successor work, and in
+    /// <c>Allocated</c> exactly the one <see cref="Successor"/> array — a
+    /// successor is a value and costs no allocation of its own.
+    /// </summary>
+    [Benchmark]
+    public IReadOnlyList<Successor> SuccessorsNonDoubles() => MoveGenerator.GenerateSuccessors(_standard, 6, 4);
+
+    /// <summary>
     /// All 21 distinct rolls from the opening position — the aggregate
     /// figure, least sensitive to any one roll's shape.
     /// </summary>

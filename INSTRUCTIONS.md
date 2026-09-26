@@ -45,12 +45,15 @@ single-file analyzers run in its build. Three areas:
 - **Generation** — `MoveGenerator`. Public: `GeneratePlays`, the
   resulting-position view `GenerateResultingStates`, the paired view
   `GenerateCandidatePlays` (each `Play` with its resulting board, as a
-  `CandidatePlay`), and the validating
-  turn-boundary pair `IsLegalPlay` / `ApplyPlay`. Internal: the single-move
-  primitives `NextMove` and `SingleMoves`
+  `CandidatePlay`), the successor view `GenerateSuccessors` (each `Play`
+  with the position it leaves the next mover, as a `Successor` value), and
+  the validating turn-boundary pair `IsLegalPlay` / `ApplyPlay`. Internal:
+  the single-move primitives `NextMove` and `SingleMoves`
   (`Span` and `List` overloads), the two optimized paths `GenerateDoubles` /
-  `GenerateNonDoubles`, and `Reference_GeneratePlays`, the brute-force ground
-  truth the tests hold them to.
+  `GenerateNonDoubles`, the play → position rule `ResultingPositionOf` and
+  the successor rule `SuccessorPositionOf` built on it, and
+  `Reference_GeneratePlays` over `Reference_LegalSequences`, the brute-force
+  ground truth the tests hold them to.
 - **Click entry** — `MoveEntryState`: stateful one-click `Play` assembly
   for board UIs, reporting each click as a `ClickOutcome` (`Illegal` /
   `MoveCommitted` / `PlayCompleted`).
@@ -60,16 +63,20 @@ single-file analyzers run in its build. Three areas:
   grants `AllowUnsafeBlocks`.
 
 **`BgMoveGen.Tests/`** — xUnit, one file per library area (generation,
-click entry, interop), plus `SyntheticPositions`: the
-deterministic, seed-generated board corpus the breadth sweeps share (see
-Validation below), and `Boards`, the hand-built boards more than one test
-class shares. A test builds a board from its counts (`BoardState.FromMop`);
-it cannot write one.
+click entry, interop), plus the helpers they share: `SyntheticPositions`,
+the deterministic, seed-generated board corpus the breadth sweeps share (see
+Validation below); `Boards`, the hand-built boards more than one test class
+uses; `Replay`, the tests' own replay of a move sequence to the position it
+reaches; `PlayText`, a play's raw encoding for failure messages; and
+`AllocationProbe`, the steady-state allocation measurement the allocation
+pins read through (BgDataTypes_Lib's method). A test builds a board from its
+counts (`BoardState.FromMop`); it cannot write one.
 
-**`BgMoveGen.Benchmarks/`** — a BenchmarkDotNet harness over
-`GeneratePlays`: `Program.cs` is the `BenchmarkSwitcher` entry point, and
-`MoveGenerationBenchmarks` measures the five play-assembly shapes plus the
-load canary. Not a test project; run on demand (see Benchmarks below).
+**`BgMoveGen.Benchmarks/`** — a BenchmarkDotNet harness over the generator
+and the native export: `Program.cs` is the `BenchmarkSwitcher` entry point,
+`MoveGenerationBenchmarks` measures the five play-assembly shapes, the
+successor view and the load canary, and `NativeExportBenchmarks` the
+export's core. Not a test project; run on demand (see Benchmarks below).
 
 ## Architecture
 
@@ -250,16 +257,21 @@ off_player     int32   on-roll player's checkers borne off
 off_opponent   int32   opponent's checkers borne off
 ```
 
-`generate_successor_states` flips every successor before return (negate and
-reverse `points`, swap bars, swap off counts) so the next call is already
-oriented correctly. `get_starting_position` does **not** flip — output is
-from the on-roll player's perspective.
+`generate_successor_states` returns every successor flipped, so the next
+call is already oriented correctly. It computes each by the managed
+successor rule, `MoveGenerator.SuccessorPositionOf` — the play's position
+flipped by `BoardPosition.Flipped`, BgDataTypes_Lib's one statement of the
+flip — so the export and `GenerateSuccessors` cannot disagree and no flip is
+re-encoded here. The off counts are this layout's own: the mover's grow by
+the play's bear-offs, and the two swap sides. `get_starting_position` does
+**not** flip — output is from the on-roll player's perspective.
 
 `Interop` is an `internal static` class; `BgBoardState` is an `internal`
 nested struct of it (`Interop.BgBoardState`), existing only to marshal
 across the native boundary and distinct from `BgDataTypes_Lib.BoardState`.
-The marshaller (`TryReadPosition` / `ToExternalFlipped` / `ToExternal`)
-translates between the two. `generate_successor_states` reads its input as
+The marshaller is one reader and one writer of the layout,
+`TryReadPosition` and `ToExternal`, both over `BoardPosition`; the writer
+never flips. `generate_successor_states` reads its input as
 a `BoardPosition` through the value's non-throwing `TryCreate`, so an input
 board that is not a well-formed position is refused with
 `Status.InvalidPosition` before anything runs, and resets its reused board
@@ -269,12 +281,12 @@ never writes counts. The `[UnmanagedCallersOnly]` exports
 `internal` too. None of this managed visibility touches the native
 surface — NativeAOT's export discovery is attribute-based, so the C
 exports are emitted identically whether the declaring class is public or
-internal (verified — see Pitfalls). Own tests reach the class through
-`InternalsVisibleTo`.
+internal (verified — see Pitfalls). Own tests, and the benchmarks'
+`NativeExportBenchmarks`, reach the class through `InternalsVisibleTo`.
 
 ### Bg960 random starting position
 
-Generated by `BoardState.Bg960(seed?)` in BgDataTypes_Lib — see
+Generated by `BoardPosition.Bg960(seed?)` in BgDataTypes_Lib — see
 [that subproject's `INSTRUCTIONS.md`](../BgDataTypes_Lib/INSTRUCTIONS.md)
 for the constraints (symmetry, quadrant coverage, mirror conflicts,
 pip-floor retry loop). BgMoveGen exposes it through the
@@ -354,8 +366,11 @@ pip-floor retry loop). BgMoveGen exposes it through the
 
 `BgMoveGen.Benchmarks` is a BenchmarkDotNet harness over the public
 `GeneratePlays` entry point — the surface BgRLEngine drives through interop,
-and the one whose cost matters. Five cases cover the distinct play-assembly
-shapes; the sixth row is not a generator measurement at all:
+and the one whose cost matters — and over the export around it. Five cases
+cover the distinct play-assembly shapes; `SuccessorsNonDoubles` and
+`NativeAllOpeningRolls` measure what the successor view and the native
+export add to the generator; the canary is not a generator measurement at
+all:
 
 | Benchmark | Exercises |
 |---|---|
@@ -364,6 +379,8 @@ shapes; the sixth row is not a generator measurement at all:
 | `NonDoubles` | 6-4 from the opening — the two-pass avoidance-dedup path |
 | `NonDoublesBearOff` | 6-5 on a home board with a lone checker on the highest point — that path where moves encode as `(point, 0)` |
 | `AllOpeningRolls` | all 21 rolls from the opening — the aggregate signal |
+| `SuccessorsNonDoubles` | `NonDoubles`' roll through `GenerateSuccessors` — the successor rule on top of the generator, and in `Allocated` exactly one `Successor` array more |
+| `NativeAllOpeningRolls` (`NativeExportBenchmarks`) | all 21 opening rolls through the export's core — reading the input as a position, the reused board's reset, the successor rule, the layout writer; its difference from `AllOpeningRolls` is the export's own work |
 | `SentinelNotationFormat` | notation of a fixed play set, through BgDataTypes_Lib's `Play.ToNotation` — the load canary, not a generator path |
 
 `[MemoryDiagnoser]` is on because allocation, not nanoseconds, is the property
@@ -450,6 +467,10 @@ IReadOnlyList<BoardState> boards = MoveGenerator.GenerateResultingStates(state, 
 IReadOnlyList<CandidatePlay> candidates = MoveGenerator.GenerateCandidatePlays(state, die1, die2);
 // candidates[i].Play, candidates[i].ResultingState
 
+// Each play with its successor: the position it leaves the next mover (flipped), as values.
+IReadOnlyList<Successor> successors = MoveGenerator.GenerateSuccessors(state, die1, die2);
+// successors[i].Play, successors[i].Position
+
 // Validating turn-boundary primitives.
 bool legal = MoveGenerator.IsLegalPlay(state, play, die1, die2);
 MoveGenerator.ApplyPlay(state, play, die1, die2);   // throws on illegal play
@@ -484,6 +505,25 @@ is no `default` instance with a null board. It defines no value equality.
 `ResultingState` is the caller's own mutable board, and mutating it breaks
 the association. Choosing among candidates, and breaking ties, is the
 consumer's decision.
+
+`GenerateSuccessors` is the counterpart in the next mover's frame
+(halheinrich/backgammon#243), for consumers that choose a play by
+evaluating the position it leaves the opponent and must report the play:
+successor `i` is `GeneratePlays`' play `i` (the generator's own encoding)
+and its position flipped — the board `BoardState.ApplyPlay` leaves, as a
+value, and exactly what the native `generate_successor_states` writes, both
+computed by the one successor rule `SuccessorPositionOf`. The positions are
+distinct; a pass yields the input flipped. Two questions the issue left
+open are settled as values: the play travels with each successor (a
+one-ply agent returns the play it chose, and a pair means no consumer zips
+two lists), and a successor costs no allocation — `Successor` is a
+`readonly struct` holding its `Play` and its `BoardPosition` inline, so the
+list is one array beyond `GeneratePlays`' own (pinned to the byte by
+`GenerateSuccessors_AllocatesOnlyItsList_NothingPerSuccessor`). The
+constructor is internal, so only BgMoveGen pairs a play with its successor;
+`default` is the empty play with the empty position. Like `Play`, it has no
+equality: `==` is not defined, and `Equals` and `GetHashCode` throw; compare
+positions with `a.Position == b.Position`.
 
 The candidates `GeneratePlays` returns are distinct by resulting position:
 exactly one play per position a legal play reaches, so no two are the same
@@ -592,9 +632,10 @@ int get_version();
   the native path needs it public.
 - **`GenerateResultingStates` is not a successor generator.** Its boards
   are in the mover's frame; a consumer that needs the next mover's
-  perspective must flip (`FlippedCopy`) — and the native
-  `generate_successor_states`, despite the similar purpose, *does* flip.
-  Don't "fix" either to match the other: they serve different frames.
+  perspective uses `GenerateSuccessors`, which flips — as the native
+  `generate_successor_states` does, by the same rule. Don't "fix" either
+  frame to match the other, and don't flip in a consumer: the flip is
+  `BoardPosition.Flipped`'s, reached through `SuccessorPositionOf`.
 - **Fixed-arity `Play.Create` is the spelling at the generator's
   play-assembly sites; the span-taking spellings are not.** BgDataTypes_Lib's
   intent-level construction surface (`Play.Create(m1, m2, m3, m4)`) reads

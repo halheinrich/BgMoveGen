@@ -11,8 +11,9 @@
        capability grant — not merely a value that happens to coincide today.
        PublishAot (shipping-only NativeAOT publish) and AllowUnsafeBlocks (the
        shipping project needs it for interop pointer marshalling, the test
-       project for InteropTests — two independent per-project justifications,
-       not a repo policy) stay in their csproj; hoisting the unsafe grant would
+       project for InteropTests, the benchmark project for
+       NativeExportBenchmarks — independent per-project justifications, not a
+       repo policy) stay in their csproj; hoisting the unsafe grant would
        silently extend it to any future project that has no such need. The test
        project's doc-file override is likewise per-project. -->
   <PropertyGroup>

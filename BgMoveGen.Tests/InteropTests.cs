@@ -122,6 +122,7 @@ public unsafe class InteropTests
                     continue;   // the buffer truncates; not this pin's subject
 
                 var results = RunInterop(MakeExternal(fresh, offPlayer: 2, offOpponent: 5), die1, die2);
+                var managed = MoveGenerator.GenerateSuccessors(fresh, die1, die2);
 
                 Assert.Equal(plays.Count, results.Length);
                 for (int i = 0; i < plays.Count; i++)
@@ -136,6 +137,7 @@ public unsafe class InteropTests
 
                     string where = $"Position {index} {die1}-{die2} successor {i}";
                     Assert.True(after.ToPosition().Flipped() == PositionOf(results[i]), where);
+                    Assert.True(managed[i].Position == PositionOf(results[i]), $"{where}: differs from GenerateSuccessors.");
                     Assert.True(results[i].OffPlayer == 5, where);
                     Assert.True(results[i].OffOpponent == 2 + bearOffs, where);
                 }

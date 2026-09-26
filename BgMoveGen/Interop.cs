@@ -100,17 +100,25 @@ internal static unsafe class Interop
         {
             if (count >= bufferCapacity) break;
 
-            for (int i = 0; i < play.Count; i++)
-                _state.ApplyMove(play[i]);
-
-            ToExternalFlipped(_state, offPlayer, offOpponent, play, &outputBuffer[count]);
+            // The managed successor rule, so the export and GenerateSuccessors
+            // cannot disagree: the play's position, flipped by the value. The
+            // off counts are this layout's own: the mover's grow by the play's
+            // bear-offs, and the two swap sides with the flip.
+            var successor = MoveGenerator.SuccessorPositionOf(_state, in play);
+            ToExternal(successor, offOpponent, offPlayer + BearOffs(in play), &outputBuffer[count]);
             count++;
-
-            for (int i = play.Count - 1; i >= 0; i--)
-                _state.UndoMove(play[i]);
         }
 
         return count;
+    }
+
+    /// <summary>The checkers <paramref name="play"/> bears off: its moves to 0.</summary>
+    private static int BearOffs(in Play play)
+    {
+        int bearOffs = 0;
+        foreach (var move in play)
+            if (move.ToPt == 0) bearOffs++;
+        return bearOffs;
     }
 
     // ── Starting position export ──────────────────────────────────
@@ -127,36 +135,19 @@ internal static unsafe class Interop
         int seed,
         BgBoardState* output)
     {
-        BoardState? s = variant switch
+        BoardPosition? start = variant switch
         {
-            0 => BoardState.Standard(),
-            1 => BoardState.Nackgammon(),
-            2 => BoardState.Bg960(seed == -1 ? null : seed),
+            0 => BoardPosition.Standard,
+            1 => BoardPosition.Nackgammon,
+            2 => BoardPosition.Bg960(seed == -1 ? null : seed),
             _ => null
         };
 
-        if (s == null) return (int)Status.InvalidArgument;   // unknown variant
+        if (start is not { } position) return (int)Status.InvalidArgument;   // unknown variant
 
-        ToExternal(s, output);
+        // From the on-roll player's perspective: not flipped, nothing borne off.
+        ToExternal(position, offPlayer: 0, offOpponent: 0, output);
         return 0;
-    }
-
-    /// <summary>
-    /// Write a BoardState into a BgBoardState without flipping.
-    /// Used for starting positions — always from the on-roll player's perspective.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void ToExternal(BoardState state, BgBoardState* dest)
-    {
-        var pts = state.Points;
-
-        for (int k = 0; k < 24; k++)
-            dest->Points[k] = (short)pts[k + 1];
-
-        dest->BarPlayer = pts[25];
-        dest->BarOpponent = -pts[0];
-        dest->OffPlayer = 0;
-        dest->OffOpponent = 0;
     }
 
     // ── Translation helpers ───────────────────────────────────────
@@ -186,40 +177,26 @@ internal static unsafe class Interop
     }
 
     /// <summary>
-    /// Write the current board state into dest as a flipped BgBoardState.
-    /// Flip = negate + reverse points, swap bars, swap off counts.
-    /// Bear-off delta applied to off counts based on moves in play.
-    /// Single pass, no allocation.
+    /// Write <paramref name="position"/> into <paramref name="dest"/> as it
+    /// stands, with the given off counts — the one writer of BgRLEngine's
+    /// layout, the mirror of <see cref="TryReadPosition"/>. It never flips: a
+    /// successor arrives already flipped by the value
+    /// (<see cref="MoveGenerator.SuccessorPositionOf"/>), a starting position
+    /// is in the on-roll frame. Allocation-free.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void ToExternalFlipped(
-        BoardState state,
-        int offPlayer,
-        int offOpponent,
-        Play play,
-        BgBoardState* dest)
+    private static void ToExternal(
+        BoardPosition position, int offPlayer, int offOpponent, BgBoardState* dest)
     {
-        var pts = state.Points;
+        Span<int> counts = stackalloc int[26];
+        position.CopyTo(counts);
 
-        // Reverse and negate: internal Points[24]=24-pt → external points[23], negated
-        //                     internal Points[1] =1-pt  → external points[0],  negated
         for (int k = 0; k < 24; k++)
-            dest->Points[k] = (short)(-pts[24 - k]);
+            dest->Points[k] = (short)counts[k + 1];
 
-        // Bar: swap and negate
-        // pts[0] stores opponent bar as a negative value → new player bar = positive
-        dest->BarPlayer = -pts[0];
-        dest->BarOpponent = pts[25];
-
-        // Off: count bear-off moves in this play
-        int newOffPlayer = offPlayer;
-        for (int i = 0; i < play.Count; i++)
-        {
-            if (play[i].ToPt == 0) newOffPlayer++;
-        }
-
-        // Swap: after flip, player becomes opponent and vice versa
-        dest->OffPlayer = offOpponent;
-        dest->OffOpponent = newOffPlayer;
+        dest->BarPlayer = counts[25];
+        dest->BarOpponent = -counts[0];
+        dest->OffPlayer = offPlayer;
+        dest->OffOpponent = offOpponent;
     }
 }

@@ -11,6 +11,8 @@
                          demand by running this project in Release, never as
                          part of the suite: a run takes minutes and asserts
                          nothing. Invocation is in INSTRUCTIONS.md.
+         AllowUnsafeBlocks — NativeExportBenchmarks drives the native
+                         export's core, which takes BgBoardState pointers.
 
        Deliberately *not* set: Optimize. Forcing it on would let a Debug
        build produce Release-like timings, but at the cost of optimized IL
@@ -22,6 +24,7 @@
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
     <IsTestProject>false</IsTestProject>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
