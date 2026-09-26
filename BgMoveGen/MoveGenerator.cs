@@ -786,13 +786,16 @@ public static class MoveGenerator
     /// reaches, each move a legal single move (<see cref="SingleMoves(BoardState, int, Span{Move})"/>)
     /// from the board the moves before it leave. The rules on the whole play
     /// are applied after: as many dice as can be played, and a lone
-    /// non-double die the larger when either could be. The one pass when
-    /// there is no legal move. The space
-    /// <see cref="Reference_GeneratePlays"/> reduces to one play per position.
+    /// non-double die the larger when either could be. Which die played a
+    /// lone move is recorded, not inferred: each ordering is recursed apart,
+    /// and a one-move sequence played its ordering's first die. (Inferring it
+    /// from the distance moved misreads a larger-die bear-off from a point
+    /// below that die as the smaller die's.) The one pass when there is no
+    /// legal move. The space <see cref="Reference_GeneratePlays"/> reduces to
+    /// one play per position.
     /// </summary>
     internal static List<Play> Reference_LegalSequences(BoardState state, int die1, int die2)
     {
-        var allPlays = new List<Play>();
         var current = new Play();
 
         if (die1 == die2)
@@ -800,57 +803,46 @@ public static class MoveGenerator
             int[] dice = [die1, die1, die1, die1];
             var buffers = new Move[4][];
             for (int i = 0; i < 4; i++) buffers[i] = new Move[30];
-            Reference_Recurse(state, dice, 0, ref current, allPlays, buffers);
-        }
-        else
-        {
-            // Try both orderings
-            var buffers = new Move[2][];
-            buffers[0] = new Move[30];
-            buffers[1] = new Move[30];
-            Reference_Recurse(state, [die1, die2], 0, ref current, allPlays, buffers);
-            Reference_Recurse(state, [die2, die1], 0, ref current, allPlays, buffers);
+            var sequences = new List<Play>();
+            Reference_Recurse(state, dice, 0, ref current, sequences, buffers);
+
+            int mostUsed = MostMoves(sequences);
+            return mostUsed == 0 ? [[]] : WithMoves(sequences, mostUsed);
         }
 
-        if (allPlays.Count == 0)
-            return [new Play()];
+        int bigDie = Math.Max(die1, die2);
+        int smallDie = Math.Min(die1, die2);
+        var orderBuffers = new[] { new Move[30], new Move[30] };
+        var bigFirst = new List<Play>();
+        var smallFirst = new List<Play>();
+        Reference_Recurse(state, [bigDie, smallDie], 0, ref current, bigFirst, orderBuffers);
+        Reference_Recurse(state, [smallDie, bigDie], 0, ref current, smallFirst, orderBuffers);
 
-        // Must use maximum number of dice
-        int maxUsed = 0;
-        foreach (var p in allPlays)
-            if (p.Count > maxUsed) maxUsed = p.Count;
-
+        int maxUsed = Math.Max(MostMoves(bigFirst), MostMoves(smallFirst));
         if (maxUsed == 0)
-            return [new Play()];
+            return [[]];   // the pass
 
-        var best = new List<Play>();
-        foreach (var p in allPlays)
-            if (p.Count == maxUsed) best.Add(p);
+        if (maxUsed == 2)
+            return [.. WithMoves(bigFirst, 2), .. WithMoves(smallFirst, 2)];
 
-        // If only one die usable for non-doubles, must use the larger
-        if (die1 != die2 && maxUsed == 1)
-        {
-            int maxDie = Math.Max(die1, die2);
-            // Try each play: apply it and check if the distance moved equals maxDie
-            // Since we don't store the die, infer from the move
-            var withBig = new List<Play>();
-            var withSmall = new List<Play>();
-            foreach (var p in best)
-            {
-                int frPt = p[0].FrPt;
-                int toPt = p[0].ToPt;
-                int dist = toPt == 0 ? frPt : frPt - Math.Abs(toPt);
-                if (dist >= maxDie)
-                    withBig.Add(p);
-                else
-                    withSmall.Add(p);
-            }
-            if (withBig.Count > 0)
-                best = withBig;
-        }
-
-        return best;
+        // Only one die can be played: the larger when it can be. A one-move
+        // sequence of the larger-die-first ordering played the larger die.
+        var byBigDie = WithMoves(bigFirst, 1);
+        return byBigDie.Count > 0 ? byBigDie : WithMoves(smallFirst, 1);
     }
+
+    /// <summary>The most moves any of <paramref name="sequences"/> plays.</summary>
+    private static int MostMoves(List<Play> sequences)
+    {
+        int most = 0;
+        foreach (var sequence in sequences)
+            most = Math.Max(most, sequence.Count);
+        return most;
+    }
+
+    /// <summary>The <paramref name="sequences"/> of exactly <paramref name="count"/> moves, in order.</summary>
+    private static List<Play> WithMoves(List<Play> sequences, int count) =>
+        sequences.FindAll(sequence => sequence.Count == count);
 
     private static void Reference_Recurse(
         BoardState state,

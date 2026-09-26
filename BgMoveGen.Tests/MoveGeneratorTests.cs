@@ -446,6 +446,28 @@ public class ReferenceCorrectnessTests
         }
     }
 
+    [Fact]
+    public void Reference_ALoneDieIsTheDieThatPlayedIt_EvenABearOffBelowTheLargerDie()
+    {
+        // A lone checker on the 2-point, 6-3: either die bears it off, and
+        // then nothing is left for the other, so only one die is played — the
+        // larger, by the rule. Its move (2, 0) travels 2 pips, fewer than the
+        // 6, so inferring the die from the distance filed it as the smaller
+        // die's, kept the smaller die's (2, 0) beside it, and was right only
+        // because both reach one position. The reference records the die: the
+        // one legal sequence is the larger die's.
+        var mop = new int[26];
+        mop[2] = 1;
+        mop[24] = -2;
+        var state = BoardState.FromMop(mop);
+
+        var sequences = MoveGenerator.Reference_LegalSequences(state, 6, 3);
+
+        var only = Assert.Single(sequences);
+        Assert.True(only.IsSameEncoding([new(2, 0)]));
+        Assert.True(state.IsSamePlay(only, Assert.Single(MoveGenerator.GeneratePlays(state, 6, 3))));
+    }
+
     /// <summary>
     /// The property sweep's sample: the first positions of the shared seeded
     /// corpus. Bounded because it walks every legal sequence, not one per
