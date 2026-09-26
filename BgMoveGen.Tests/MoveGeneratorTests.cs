@@ -1374,6 +1374,25 @@ public class ApplyPlayValidatingTests
     }
 
     [Fact]
+    public void ValidPlayWrongForTheDice_IsRejected_BoardUnchanged()
+    {
+        // 24/20 13/9 is a valid play from the opening board — every hop lands
+        // on an open point, so BoardState.ApplyPlay would apply it — but it
+        // plays two 4s, not 6-4. Legality is the roll's: only the match
+        // against GeneratePlays refuses it. (The other illegal fixtures here
+        // are also invalid by the board rule, which would refuse them even if
+        // the match were skipped.)
+        var state = BoardState.Standard();
+        var snapshot = state.ToPosition();
+        Play twoFours = [new(24, 20), new(13, 9)];
+
+        Assert.True(state.Copy().TryApplyPlay(twoFours));
+        Assert.False(MoveGenerator.IsLegalPlay(state, twoFours, 6, 4));
+        Assert.Throws<ArgumentException>(() => MoveGenerator.ApplyPlay(state, twoFours, 6, 4));
+        Assert.Equal(snapshot, state.ToPosition());
+    }
+
+    [Fact]
     public void HitlessEncodingOfHittingPlay_Throws_AndCannotCorruptBoard()
     {
         // Closes the booked silent-corruption hazard. Under the old hit-blind
