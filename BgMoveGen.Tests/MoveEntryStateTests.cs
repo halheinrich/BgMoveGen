@@ -92,11 +92,11 @@ public class MoveEntryStateTests
         Assert.Contains(allPlays, p => p.IsSameEncoding(completed!.Value));
     }
 
-    private static int OwnOnBoard(BoardState s)
+    private static int OwnOnBoard(BoardPosition position)
     {
         int total = 0;
         for (int i = 1; i <= 25; i++)
-            if (s.Points[i] > 0) total += s.Points[i];
+            if (position[i] > 0) total += position[i];
         return total;
     }
 
@@ -111,6 +111,59 @@ public class MoveEntryStateTests
     // ── Construction ──────────────────────────────────────────────
 
     [Fact]
+    public void CurrentPosition_IsTheIntermediatePosition_AfterEachClick()
+    {
+        // Read after every click of a full doubles play, it is the start with
+        // exactly the committed moves applied — the tests' own replay of
+        // AppliedMoves — and after each undo it steps back the same way.
+        var initial = BoardState.Standard();
+        var entry = new MoveEntryState(initial, 6, 6);
+        Assert.Equal(BoardPosition.Standard, entry.CurrentPosition);
+
+        foreach (int point in new[] { 24, 24, 13, 13 })
+        {
+            entry.TryAdvanceFrom(point, new[] { 6 });
+            Assert.Equal(Replay.PositionAfter(initial, Play.Create([.. entry.AppliedMoves])), entry.CurrentPosition);
+        }
+        Assert.True(entry.IsComplete);
+
+        while (entry.AppliedMoves.Count > 0)
+        {
+            entry.UndoLast();
+            Assert.Equal(Replay.PositionAfter(initial, Play.Create([.. entry.AppliedMoves])), entry.CurrentPosition);
+        }
+        Assert.Equal(BoardPosition.Standard, entry.CurrentPosition);
+    }
+
+    [Fact]
+    public void NoMemberHandsOutTheBoard_CurrentPositionIsAValue()
+    {
+        // The board the entry state assembles the play on is its own: no
+        // public member returns a BoardState, and CurrentPosition is a
+        // readonly struct, so what a caller reads can be read and never
+        // written — a write cannot reach the entry state's board behind its
+        // bookkeeping.
+        var type = typeof(MoveEntryState);
+        var members = type.GetMembers(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance
+                                      | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.DeclaredOnly);
+
+        Assert.DoesNotContain(members, m => m switch
+        {
+            System.Reflection.PropertyInfo p => p.PropertyType == typeof(BoardState),
+            System.Reflection.MethodInfo mi => mi.ReturnType == typeof(BoardState),
+            System.Reflection.FieldInfo f => f.FieldType == typeof(BoardState),
+            _ => false,
+        });
+
+        var current = type.GetProperty(nameof(MoveEntryState.CurrentPosition))!;
+        Assert.Equal(typeof(BoardPosition), current.PropertyType);
+        Assert.Null(current.SetMethod);
+        Assert.True(typeof(BoardPosition).IsValueType);
+        Assert.Contains(typeof(BoardPosition).CustomAttributes,
+            a => a.AttributeType.FullName == "System.Runtime.CompilerServices.IsReadOnlyAttribute");
+    }
+
+    [Fact]
     public void Construction_CapturesInitialByCopy()
     {
         var initial = BoardState.Standard();
@@ -118,9 +171,9 @@ public class MoveEntryStateTests
 
         initial.SetPosition(BoardPosition.Empty);
 
-        Assert.Equal(BoardPosition.Standard, entry.Current.ToPosition());
+        Assert.Equal(BoardPosition.Standard, entry.CurrentPosition);
         entry.UndoAll();
-        Assert.Equal(BoardPosition.Standard, entry.Current.ToPosition());
+        Assert.Equal(BoardPosition.Standard, entry.CurrentPosition);
     }
 
     [Fact]
@@ -179,8 +232,8 @@ public class MoveEntryStateTests
         Assert.Single(entry.AppliedMoves);
         Assert.Equal(8, entry.AppliedMoves[0].FrPt);
         Assert.Equal(5, entry.AppliedMoves[0].ToPt); // die 3
-        Assert.Equal(2, entry.Current.Points[8]);
-        Assert.Equal(1, entry.Current.Points[5]);
+        Assert.Equal(2, entry.CurrentPosition[8]);
+        Assert.Equal(1, entry.CurrentPosition[5]);
     }
 
     [Fact]
@@ -207,7 +260,7 @@ public class MoveEntryStateTests
         Assert.Equal(ClickOutcome.MoveCommitted, entry.TryAdvanceFrom(3, new[] { 5, 1 }));
         Assert.Equal(3, entry.AppliedMoves[0].FrPt);
         Assert.Equal(2, entry.AppliedMoves[0].ToPt); // die 1, despite preferring 5
-        Assert.Equal(4, entry.Current.Points[3]);    // 5 - 1
+        Assert.Equal(4, entry.CurrentPosition[3]);    // 5 - 1
     }
 
     [Fact]
@@ -298,8 +351,8 @@ public class MoveEntryStateTests
         var entry = new MoveEntryState(s, 3, 1);
         // Bar entries: 22 (die 3) and 24 (die 1). Prefer die 3 ⇒ enter on 22.
         Assert.Equal(ClickOutcome.MoveCommitted, entry.TryAdvanceFrom(25, new[] { 3, 1 }));
-        Assert.Equal(0, entry.Current.Points[25]);
-        Assert.Equal(1, entry.Current.Points[22]);
+        Assert.Equal(0, entry.CurrentPosition[25]);
+        Assert.Equal(1, entry.CurrentPosition[22]);
     }
 
     [Fact]
@@ -311,7 +364,7 @@ public class MoveEntryStateTests
         // From 4, die 4 bears off (ToPt 0); die 1 → 4/3. Prefer die 4 ⇒ bear off.
         Assert.Equal(ClickOutcome.MoveCommitted, entry.TryAdvanceFrom(4, new[] { 4, 1 }));
         Assert.Equal(0, entry.AppliedMoves[0].ToPt); // bore off
-        Assert.Equal(4, entry.Current.Points[4]);    // 5 - 1
+        Assert.Equal(4, entry.CurrentPosition[4]);    // 5 - 1
     }
 
     [Fact]
@@ -342,7 +395,7 @@ public class MoveEntryStateTests
         // 10 is empty — no own checker, no advancing move.
         Assert.Equal(ClickOutcome.Illegal, entry.TryAdvanceFrom(10, new[] { 3, 1 }));
         Assert.Empty(entry.AppliedMoves);
-        Assert.Equal(0, entry.Current.Points[10]);
+        Assert.Equal(0, entry.CurrentPosition[10]);
     }
 
     [Fact]
@@ -370,8 +423,8 @@ public class MoveEntryStateTests
         entry.TryAdvanceFrom(8, new[] { 3, 1 }); // 8/5
 
         // Standard: Points[8]=3, Points[5]=0. After 8→5: Points[8]=2, Points[5]=1.
-        Assert.Equal(2, entry.Current.Points[8]);
-        Assert.Equal(1, entry.Current.Points[5]);
+        Assert.Equal(2, entry.CurrentPosition[8]);
+        Assert.Equal(1, entry.CurrentPosition[5]);
     }
 
     [Fact]
@@ -386,8 +439,8 @@ public class MoveEntryStateTests
         var hit = entry.AppliedMoves[0];
         Assert.Equal(13, hit.FrPt);
         Assert.Equal(-10, hit.ToPt); // hit encoded internally as negative
-        Assert.Equal(1, entry.Current.Points[10]);   // player landed on 10
-        Assert.Equal(-1, entry.Current.Points[0]);   // opponent on bar
+        Assert.Equal(1, entry.CurrentPosition[10]);   // player landed on 10
+        Assert.Equal(-1, entry.CurrentPosition[0]);   // opponent on bar
     }
 
     // ── LegalNextClicks (advance-source surface) ──────────────────
@@ -405,7 +458,7 @@ public class MoveEntryStateTests
         // sources = FrPts of those die-1 moves.
         var expected = new HashSet<int>();
         Span<Move> buf = stackalloc Move[30];
-        int n = MoveGenerator.SingleMoves(entry.Current, 1, buf);
+        int n = MoveGenerator.SingleMoves(new BoardState(entry.CurrentPosition), 1, buf);
         for (int i = 0; i < n; i++) expected.Add(buf[i].FrPt);
 
         Assert.Equal(expected, new HashSet<int>(entry.LegalNextClicks));
@@ -447,8 +500,8 @@ public class MoveEntryStateTests
 
         // Die 1 entry (24) is blocked; preferring die 1 still enters via die 3 on 22.
         Assert.Equal(ClickOutcome.MoveCommitted, entry.TryAdvanceFrom(25, new[] { 1, 3 }));
-        Assert.Equal(0, entry.Current.Points[25]);
-        Assert.Equal(1, entry.Current.Points[22]);
+        Assert.Equal(0, entry.CurrentPosition[25]);
+        Assert.Equal(1, entry.CurrentPosition[22]);
     }
 
     [Fact]
@@ -495,7 +548,7 @@ public class MoveEntryStateTests
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAdvanceFrom(10, new[] { 5, 1 }));
 
         Assert.True(entry.IsComplete);
-        Assert.Equal(1, entry.Current.Points[5]);
+        Assert.Equal(1, entry.CurrentPosition[5]);
         var allPlays = MoveGenerator.GeneratePlays(initial, 5, 1);
         AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
@@ -514,7 +567,7 @@ public class MoveEntryStateTests
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAdvanceFrom(6, new[] { 1, 5 }));
 
         Assert.True(entry.IsComplete);
-        Assert.Equal(1, entry.Current.Points[5]);
+        Assert.Equal(1, entry.CurrentPosition[5]);
         var allPlays = MoveGenerator.GeneratePlays(initial, 5, 1);
         AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
@@ -587,8 +640,8 @@ public class MoveEntryStateTests
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAdvanceFrom(20, new[] { 4, 5 })); // 20/16* hit
 
         Assert.True(entry.IsComplete);
-        Assert.Equal(1, entry.Current.Points[16]);   // player landed on 16
-        Assert.Equal(-1, entry.Current.Points[0]);   // opponent sent to bar
+        Assert.Equal(1, entry.CurrentPosition[16]);   // player landed on 16
+        Assert.Equal(-1, entry.CurrentPosition[0]);   // opponent sent to bar
         var allPlays = MoveGenerator.GeneratePlays(initial, 5, 4);
         AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
@@ -603,7 +656,7 @@ public class MoveEntryStateTests
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAdvanceFrom(21, new[] { 5, 4 })); // 21/16* hit
 
         Assert.True(entry.IsComplete);
-        Assert.Equal(-1, entry.Current.Points[0]);
+        Assert.Equal(-1, entry.CurrentPosition[0]);
         var allPlays = MoveGenerator.GeneratePlays(initial, 5, 4);
         AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
@@ -651,14 +704,14 @@ public class MoveEntryStateTests
         hitPath.TryAdvanceFrom(11, new[] { 1, 5 }); // 11→10* (hit)
         hitPath.TryAdvanceFrom(10, new[] { 5, 1 }); // 10→5
         Assert.True(hitPath.IsComplete);
-        Assert.Equal(-1, hitPath.Current.Points[0]); // opponent on bar
+        Assert.Equal(-1, hitPath.CurrentPosition[0]); // opponent on bar
         AssertIsGeneratedPlay(allPlays, hitPath.CompletedPlay);
 
         var noHitPath = new MoveEntryState(s, 5, 1);
         noHitPath.TryAdvanceFrom(11, new[] { 5, 1 }); // 11→6
         noHitPath.TryAdvanceFrom(6, new[] { 1, 5 });  // 6→5
         Assert.True(noHitPath.IsComplete);
-        Assert.Equal(-1, noHitPath.Current.Points[10]); // blot survives
+        Assert.Equal(-1, noHitPath.CurrentPosition[10]); // blot survives
         AssertIsGeneratedPlay(allPlays, noHitPath.CompletedPlay);
 
         // Genuinely different outcomes — must NOT be the same play.
@@ -682,7 +735,7 @@ public class MoveEntryStateTests
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAdvanceFrom(4, new[] { 2 })); // 4→2 (checker B)
 
         Assert.True(entry.IsComplete);
-        Assert.Equal(2, entry.Current.Points[2]);
+        Assert.Equal(2, entry.CurrentPosition[2]);
         var allPlays = MoveGenerator.GeneratePlays(s, 2, 2);
         AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
@@ -699,8 +752,7 @@ public class MoveEntryStateTests
         entry.UndoLast();
 
         Assert.Empty(entry.AppliedMoves);
-        for (int i = 0; i <= 25; i++)
-            Assert.Equal(initial.Points[i], entry.Current.Points[i]);
+        Assert.Equal(initial.ToPosition(), entry.CurrentPosition);
     }
 
     [Fact]
@@ -739,9 +791,11 @@ public class MoveEntryStateTests
         Assert.Empty(entry.AppliedMoves);
         Assert.False(entry.IsComplete);
         Assert.Null(entry.CompletedPlay);
-        for (int i = 0; i <= 25; i++)
-            Assert.Equal(initial.Points[i], entry.Current.Points[i]);
-        Assert.Equal(initial.HighPointOccupied, entry.Current.HighPointOccupied);
+        Assert.Equal(initial.ToPosition(), entry.CurrentPosition);
+
+        // The reset board plays on exactly as a fresh one would: the high
+        // point it scans from came back with the position.
+        Assert.Equal(ClickOutcome.MoveCommitted, entry.TryAdvanceFrom(24, new[] { 3, 1 }));
     }
 
     [Fact]
@@ -774,11 +828,11 @@ public class MoveEntryStateTests
         var initial = TwoCheckers(2, 1);
         var entry = new MoveEntryState(initial, 2, 1);
 
-        Assert.Equal(2, OwnOnBoard(entry.Current)); // before
+        Assert.Equal(2, OwnOnBoard(entry.CurrentPosition)); // before
 
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryBearOffMax());
         Assert.True(entry.IsComplete);
-        Assert.Equal(0, OwnOnBoard(entry.Current)); // both borne off → max = 2
+        Assert.Equal(0, OwnOnBoard(entry.CurrentPosition)); // both borne off → max = 2
 
         var allPlays = MoveGenerator.GeneratePlays(initial, 2, 1);
         AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
@@ -796,12 +850,12 @@ public class MoveEntryStateTests
         var s = BoardState.FromMop(mop);
         var entry = new MoveEntryState(s, 6, 1);
 
-        var before = entry.Current.ToPosition();
+        var before = entry.CurrentPosition;
         Assert.Equal(ClickOutcome.Illegal, entry.TryBearOffMax());
 
         Assert.Empty(entry.AppliedMoves);
         Assert.False(entry.IsComplete);
-        Assert.Equal(before, entry.Current.ToPosition());
+        Assert.Equal(before, entry.CurrentPosition);
     }
 
     [Fact]
@@ -810,12 +864,12 @@ public class MoveEntryStateTests
         // Standard (3,1) opener: nothing is anywhere near bearing off.
         var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
 
-        var before = entry.Current.ToPosition();
+        var before = entry.CurrentPosition;
         Assert.Equal(ClickOutcome.Illegal, entry.TryBearOffMax());
 
         Assert.Empty(entry.AppliedMoves);
         Assert.False(entry.IsComplete);
-        Assert.Equal(before, entry.Current.ToPosition());
+        Assert.Equal(before, entry.CurrentPosition);
     }
 
     [Fact]
@@ -829,11 +883,11 @@ public class MoveEntryStateTests
 
         entry.TryAdvanceFrom(6, new[] { 6, 1 }); // manual 6/0 (die 6)
         Assert.Single(entry.AppliedMoves);
-        Assert.Equal(1, OwnOnBoard(entry.Current)); // only the 1-checker remains
+        Assert.Equal(1, OwnOnBoard(entry.CurrentPosition)); // only the 1-checker remains
 
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryBearOffMax());
         Assert.True(entry.IsComplete);
-        Assert.Equal(0, OwnOnBoard(entry.Current));
+        Assert.Equal(0, OwnOnBoard(entry.CurrentPosition));
 
         var allPlays = MoveGenerator.GeneratePlays(initial, 6, 1);
         AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
@@ -850,10 +904,10 @@ public class MoveEntryStateTests
         var s = BoardState.FromMop(mop);
         var entry = new MoveEntryState(s, 2, 2);
 
-        Assert.Equal(3, OwnOnBoard(entry.Current));
+        Assert.Equal(3, OwnOnBoard(entry.CurrentPosition));
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryBearOffMax());
         Assert.True(entry.IsComplete);
-        Assert.Equal(0, OwnOnBoard(entry.Current)); // 3 borne off
+        Assert.Equal(0, OwnOnBoard(entry.CurrentPosition)); // 3 borne off
 
         var allPlays = MoveGenerator.GeneratePlays(s, 2, 2);
         AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
@@ -880,11 +934,11 @@ public class MoveEntryStateTests
         var initial = TwoCheckers(8, 1);
         var entry = new MoveEntryState(initial, 6, 2);
 
-        Assert.Equal(2, OwnOnBoard(entry.Current)); // before
+        Assert.Equal(2, OwnOnBoard(entry.CurrentPosition)); // before
 
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryBearOffMax());
         Assert.True(entry.IsComplete);
-        Assert.Equal(1, OwnOnBoard(entry.Current)); // dropped by 1 — outlier borne off
+        Assert.Equal(1, OwnOnBoard(entry.CurrentPosition)); // dropped by 1 — outlier borne off
 
         Assert.Equal(1, BearOffCount(entry.CompletedPlay!.Value)); // exactly one ToPt == 0
         var allPlays = MoveGenerator.GeneratePlays(initial, 6, 2);
@@ -902,13 +956,13 @@ public class MoveEntryStateTests
         var entry = new MoveEntryState(s, 2, 1);
 
         Assert.False(entry.IsComplete);
-        var before = entry.Current.ToPosition();
+        var before = entry.CurrentPosition;
 
         Assert.Equal(ClickOutcome.Illegal, entry.TryBearOffMax());
 
         Assert.Empty(entry.AppliedMoves);
         Assert.False(entry.IsComplete);
-        Assert.Equal(before, entry.Current.ToPosition());
+        Assert.Equal(before, entry.CurrentPosition);
     }
 
     // ── One-click make-the-point (TryMakePoint) ───────────────────
@@ -928,9 +982,9 @@ public class MoveEntryStateTests
 
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(5));
         Assert.True(entry.IsComplete);
-        Assert.Equal(2, entry.Current.Points[5]); // point made
-        Assert.Equal(2, entry.Current.Points[8]); // 3 - 1
-        Assert.Equal(4, entry.Current.Points[6]); // 5 - 1
+        Assert.Equal(2, entry.CurrentPosition[5]); // point made
+        Assert.Equal(2, entry.CurrentPosition[8]); // 3 - 1
+        Assert.Equal(4, entry.CurrentPosition[6]); // 5 - 1
 
         // The completed play is the generator's own candidate, whatever the click path.
         var allPlays = MoveGenerator.GeneratePlays(initial, 3, 1);
@@ -951,8 +1005,8 @@ public class MoveEntryStateTests
 
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(5));
         Assert.True(entry.IsComplete);
-        Assert.Equal(2, entry.Current.Points[5]);  // two own checkers cover the point
-        Assert.Equal(-1, entry.Current.Points[0]); // opponent sent to the bar
+        Assert.Equal(2, entry.CurrentPosition[5]);  // two own checkers cover the point
+        Assert.Equal(-1, entry.CurrentPosition[0]); // opponent sent to the bar
 
         // The arrival onto the blot is generated as a hit (negative ToPt) — the sign
         // encoding stays internal; the click was the positive point 5.
@@ -975,8 +1029,8 @@ public class MoveEntryStateTests
         Assert.Equal(ClickOutcome.MoveCommitted, entry.TryMakePoint(20));
         Assert.False(entry.IsComplete);
         Assert.Equal(2, entry.AppliedMoves.Count); // exactly two sub-moves
-        Assert.Equal(2, entry.Current.Points[20]); // point made
-        Assert.Equal(0, entry.Current.Points[24]); // both back checkers advanced
+        Assert.Equal(2, entry.CurrentPosition[20]); // point made
+        Assert.Equal(0, entry.CurrentPosition[24]); // both back checkers advanced
 
         // Two 4s remain — the play then completes via one-click advances.
         entry.TryAdvanceFrom(20, new[] { 4 }); // 20/16
@@ -1002,9 +1056,9 @@ public class MoveEntryStateTests
         Assert.Equal(ClickOutcome.MoveCommitted, entry.TryMakePoint(10));
         Assert.False(entry.IsComplete);
         Assert.Equal(3, entry.AppliedMoves.Count); // three sub-moves
-        Assert.Equal(2, entry.Current.Points[10]); // point made
-        Assert.Equal(0, entry.Current.Points[14]); // outlier brought all the way in
-        Assert.Equal(0, entry.Current.Points[12]);
+        Assert.Equal(2, entry.CurrentPosition[10]); // point made
+        Assert.Equal(0, entry.CurrentPosition[14]); // outlier brought all the way in
+        Assert.Equal(0, entry.CurrentPosition[12]);
 
         // One 2 remains — completes with a final advance off the made point.
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAdvanceFrom(10, new[] { 2 }));
@@ -1029,8 +1083,8 @@ public class MoveEntryStateTests
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(4));
         Assert.True(entry.IsComplete);
         Assert.Equal(4, entry.AppliedMoves.Count); // four sub-moves, all dice consumed
-        Assert.Equal(2, entry.Current.Points[4]);  // point made
-        Assert.Equal(0, entry.Current.Points[8]);
+        Assert.Equal(2, entry.CurrentPosition[4]);  // point made
+        Assert.Equal(0, entry.CurrentPosition[8]);
 
         var allPlays = MoveGenerator.GeneratePlays(s, 2, 2);
         AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
@@ -1052,7 +1106,7 @@ public class MoveEntryStateTests
         Assert.Single(entry.AppliedMoves);
         Assert.Equal(8, entry.AppliedMoves[0].FrPt);
         Assert.Equal(5, entry.AppliedMoves[0].ToPt); // die 3, single landing on the point
-        Assert.Equal(1, entry.Current.Points[5]);
+        Assert.Equal(1, entry.CurrentPosition[5]);
         Assert.False(entry.IsComplete);
     }
 
@@ -1062,11 +1116,11 @@ public class MoveEntryStateTests
         // Standard (3,1): 6 holds own checkers — an advance source, never a make
         // destination. Rejected without inspecting reachability.
         var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
-        var before = entry.Current.ToPosition();
+        var before = entry.CurrentPosition;
 
         Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(6));
         Assert.Empty(entry.AppliedMoves);
-        Assert.Equal(before, entry.Current.ToPosition());
+        Assert.Equal(before, entry.CurrentPosition);
     }
 
     [Fact]
@@ -1078,11 +1132,11 @@ public class MoveEntryStateTests
         // Neither make nor land-one has a candidate. (The 4-point would now land via
         // the combined 8/7/4, so the genuinely-unreachable point moved to 1.)
         var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
-        var before = entry.Current.ToPosition();
+        var before = entry.CurrentPosition;
 
         Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(1));
         Assert.Empty(entry.AppliedMoves);
-        Assert.Equal(before, entry.Current.ToPosition());
+        Assert.Equal(before, entry.CurrentPosition);
     }
 
     [Fact]
@@ -1138,8 +1192,8 @@ public class MoveEntryStateTests
 
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(10));
         Assert.True(entry.IsComplete);
-        Assert.Equal(1, entry.Current.Points[10]); // own checker landed
-        Assert.Equal(-1, entry.Current.Points[0]); // opponent blot sent to the bar
+        Assert.Equal(1, entry.CurrentPosition[10]); // own checker landed
+        Assert.Equal(-1, entry.CurrentPosition[0]); // opponent blot sent to the bar
 
         var allPlays = MoveGenerator.GeneratePlays(s, 6, 2);
         AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
@@ -1155,8 +1209,8 @@ public class MoveEntryStateTests
 
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(10));
         Assert.True(entry.IsComplete);
-        Assert.Equal(1, entry.Current.Points[10]); // own checker landed
-        Assert.Equal(0, entry.Current.Points[0]);  // nothing hit
+        Assert.Equal(1, entry.CurrentPosition[10]); // own checker landed
+        Assert.Equal(0, entry.CurrentPosition[0]);  // nothing hit
 
         var allPlays = MoveGenerator.GeneratePlays(s, 6, 2);
         AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
@@ -1169,11 +1223,11 @@ public class MoveEntryStateTests
         // home, so 24 is unreachable by any path. Neither make nor land-one applies.
         var s = CombinedHitRepro(blotPoint: 10);
         var entry = new MoveEntryState(s, 6, 2);
-        var before = entry.Current.ToPosition();
+        var before = entry.CurrentPosition;
 
         Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(24));
         Assert.Empty(entry.AppliedMoves);
-        Assert.Equal(before, entry.Current.ToPosition());
+        Assert.Equal(before, entry.CurrentPosition);
     }
 
     [Fact]
@@ -1194,8 +1248,8 @@ public class MoveEntryStateTests
         Assert.Single(entry.AppliedMoves);
         Assert.Equal(12, entry.AppliedMoves[0].FrPt); // depth-1 landing chosen
         Assert.Equal(10, entry.AppliedMoves[0].ToPt); // die 2
-        Assert.Equal(1, entry.Current.Points[10]);
-        Assert.Equal(0, entry.Current.Points[12]);
+        Assert.Equal(1, entry.CurrentPosition[10]);
+        Assert.Equal(0, entry.CurrentPosition[12]);
         Assert.False(entry.IsComplete); // the 6 remains
     }
 }

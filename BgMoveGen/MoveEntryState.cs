@@ -129,10 +129,14 @@ public sealed class MoveEntryState
     public int Die2 => _die2;
 
     /// <summary>
-    /// The intermediate board after all clicks committed so far.
-    /// Internal mutable state — consumers must not modify it.
+    /// The position the clicks committed so far have reached — the
+    /// intermediate position, in the mover's frame, as a
+    /// <see cref="BoardPosition"/> value. It can be read and never written:
+    /// the board the entry state assembles the play on stays its own, so no
+    /// caller can change it behind the entry state's bookkeeping. A snapshot:
+    /// later clicks do not reach a value already read. Allocation-free.
     /// </summary>
-    public BoardState Current => _currentState;
+    public BoardPosition CurrentPosition => _currentState.ToPosition();
 
     /// <summary>
     /// Points the user can usefully click next: the set of points that have a legal

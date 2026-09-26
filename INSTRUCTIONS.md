@@ -582,8 +582,14 @@ Architecture and Pitfalls below. Public surface:
 one legal move, the caller's `diePreference` resolving which die) and
 `TryBearOffMax()` (tray click — bear off the most checkers when a unique
 completion achieves it), both → `ClickOutcome`, plus `LegalNextClicks`,
-`CompletedPlay`, `Current`, `IsComplete`, `AppliedMoves`, `UndoLast()`,
+`CompletedPlay`, `CurrentPosition`, `IsComplete`, `AppliedMoves`, `UndoLast()`,
 `UndoAll()`. Consumed by BgDiag_Razor's `BackgammonPlayEntry`.
+
+`CurrentPosition` is the intermediate position as a `BoardPosition` value —
+readable, never writable. The board the entry state assembles the play on
+is its own: no member hands it out, so no caller can change it behind the
+entry state's bookkeeping (it was once exposed as a live `BoardState`,
+which `ApplyMove` or `SetPosition` could write).
 
 ### Native — NativeAOT exports
 
