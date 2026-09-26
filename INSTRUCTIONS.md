@@ -367,9 +367,13 @@ pip-floor retry loop). BgMoveGen exposes it through the
   tracking, checker conservation, pass detection, the reused board's reset
   across successive calls and agreement with `GenerateSuccessors`, the
   statuses for a malformed board, a bad die, null pointers and a negative
-  capacity, and the exported entry points returning statuses rather than
+  capacity, the full count with nothing written when the successors
+  outnumber the capacity and every successor in a buffer of exactly that
+  count, and the exported entry points returning statuses rather than
   throwing, Bg960 conservation and seed reproducibility); MoveEntryState
-  click-by-click assembly.
+  click-by-click assembly. The interop tests fetch successors the way the
+  contract tells a caller to — a small buffer first, then a retry at the
+  returned count — so the retry runs throughout the suite.
 
 ### Benchmarks
 
@@ -389,7 +393,7 @@ all:
 | `NonDoublesBearOff` | 6-5 on a home board with a lone checker on the highest point — that path where moves encode as `(point, 0)` |
 | `AllOpeningRolls` | all 21 rolls from the opening — the aggregate signal |
 | `SuccessorsNonDoubles` | `NonDoubles`' roll through `GenerateSuccessors` — the successor rule on top of the generator, and in `Allocated` exactly one `Successor` array more |
-| `NativeAllOpeningRolls` (`NativeExportBenchmarks`) | all 21 opening rolls through the export's core — reading the input as a position, the reused board's reset, the successor rule, the layout writer; its difference from `AllOpeningRolls` is the export's own work |
+| `NativeAllOpeningRolls` (`NativeExportBenchmarks`) | all 21 opening rolls through the export's core, into a buffer sized to the largest of their successor lists so every call writes its whole list — reading the input as a position, the reused board's reset, the successor rule, the layout writer; its difference from `AllOpeningRolls` is the export's own work |
 | `SentinelNotationFormat` | notation of a fixed play set, through BgDataTypes_Lib's `Play.ToNotation` — the load canary, not a generator path |
 
 `[MemoryDiagnoser]` is on because allocation, not nanoseconds, is the property
@@ -589,10 +593,13 @@ int generate_successor_states(
     int die1, int die2,
     BgBoardState* outputBuffer,
     int bufferCapacity);
-// Returns successor count (always >= 1; a pass returns one flipped state
-// with no moves applied), writing at most bufferCapacity successors — see
-// Pitfalls on truncation. Each successor is flipped to the opponent's
-// perspective. A refusal writes nothing and returns:
+// A positive return is always the full successor count (>= 1; a pass
+// returns one flipped state with no moves applied). Each successor is
+// flipped to the opponent's perspective. When the count exceeds
+// bufferCapacity, nothing is written and the count is returned: retry with a
+// buffer of that size. A caller tells the two apart by comparing the return
+// with its capacity — nothing is ever truncated. A refusal writes nothing and
+// returns:
 //   -1 (InvalidArgument)  a null pointer, a negative capacity, a die outside 1-6
 //   -2 (InvalidPosition)  the input board is not a well-formed position
 // and -3 (Failed) reports an exception no argument explains.
@@ -605,8 +612,10 @@ int get_starting_position(int variant, int seed, BgBoardState* output);
 // Output is from the on-roll player's perspective (NOT flipped).
 
 int get_version();
-// Returns the DLL version integer. BgRLEngine checks this against
-// REQUIRED_MOVEGEN_VERSION on load and hard-fails on mismatch.
+// Returns the DLL version integer (101). BgRLEngine checks this against
+// REQUIRED_MOVEGEN_VERSION on load and hard-fails on mismatch. 101 is the
+// no-truncation contract above: a caller built for 100 reads as many
+// successors as the return says, and would read past its buffer.
 ```
 
 ## Pitfalls
@@ -653,13 +662,18 @@ int get_version();
   cores' `try`; pinned through the exported entry points themselves, called
   by unmanaged function pointer, by
   `TheExportedEntryPoints_ReturnStatuses_NeverAnException`.
-- **`MaxSuccessors` is not an upper bound, and a small buffer truncates
-  silently.** `generate_successor_states` writes at most `bufferCapacity`
-  successors and returns the number written. BgRLEngine allocates
-  `MaxSuccessors` (100), but a legal position can have far more distinct
-  plays: fifteen checkers on fifteen points of a race have 1,547 of 1-1,
-  measured on this generator. Such a call returns 100 with the rest dropped,
-  indistinguishable from a position with exactly 100.
+- **A caller's buffer is no bound on successors, so the export never
+  truncates.** A legal position can have far more distinct plays than any
+  fixed buffer a caller picks: fifteen checkers on fifteen points of a race
+  have 1,547 of 1-1 (pinned by
+  `MoreSuccessorsThanTheCapacity_ReturnsTheFullCount_AndWritesNothing`).
+  `generate_successor_states` therefore returns the full count every time,
+  and when it exceeds `bufferCapacity` writes nothing, so the caller
+  compares the return with its capacity and retries with a buffer of that
+  size. It once wrote the first `bufferCapacity` and returned that many — a
+  truncated list indistinguishable from a whole one. Nothing in this
+  library assumes a caller's buffer size; the tests and the benchmark
+  choose their own.
 - **NativeAOT exports survive an `internal` declaring type.** `Interop`,
   its `[UnmanagedCallersOnly]` exports, and the `BgBoardState` marshalling
   struct are all `internal`, yet `generate_successor_states`,

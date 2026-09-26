@@ -10,7 +10,12 @@ namespace BgMoveGen;
 /// Contract: generate_successor_states(input, die1, die2, outputBuffer, bufferCapacity)
 ///   - input and every output are always from the on-roll player's perspective.
 ///   - Each successor is flipped before writing so the next call is already oriented.
-///   - Returns successor count. Pass = 1 (flipped state with no moves applied).
+///   - A positive return is always the call's full successor count. Pass = 1
+///     (flipped state with no moves applied).
+///   - When that count exceeds bufferCapacity, nothing is written and the
+///     count is returned, so the caller retries with a buffer of that size; a
+///     caller tells the two apart by comparing the return with its capacity.
+///     Nothing is ever truncated.
 ///   - A refused call returns a negative <see cref="Status"/>.
 ///   - NOT thread-safe within a single process. Each OS process gets its own
 ///     instance; multiple Python processes are fully safe. If multi-thread use
@@ -30,21 +35,14 @@ namespace BgMoveGen;
 internal static unsafe class Interop
 {
     /// <summary>
-    /// The output buffer BgRLEngine allocates: output_buffer =
-    /// (BgBoardState * MaxSuccessors)() on the Python side. <b>Not an upper
-    /// bound on successors</b>: a legal position can have far more — fifteen
-    /// checkers on fifteen points of a race have 1,547 distinct plays of 1-1.
-    /// A call writes at most <c>bufferCapacity</c> successors and returns the
-    /// number written, so a buffer smaller than the successor count truncates
-    /// the list without saying so.
-    /// </summary>
-    public const int MaxSuccessors = 100;
-
-    /// <summary>
     /// Version reported to consumers via get_version() export.
     /// BgRLEngine defines the required version; BgMoveGen must match it.
+    /// 101: <c>generate_successor_states</c> no longer truncates — a count
+    /// above the capacity writes nothing (see the type summary) — so a caller
+    /// built for 100, which reads as many successors as the return says,
+    /// would read past its buffer.
     /// </summary>
-    public const int Version = 100;
+    public const int Version = 101;
 
     /// <summary>
     /// The exports' status codes: a successful call returns a count or 0, a
@@ -110,7 +108,9 @@ internal static unsafe class Interop
     /// Testable core — same logic, callable from managed code, and like the
     /// export it never throws: a refusal is a negative <see cref="Status"/>
     /// (see the type summary). Nothing is written before the pointers, the
-    /// capacity, the board and the dice are accepted.
+    /// capacity, the board and the dice are accepted, and nothing at all when
+    /// the successors outnumber <paramref name="bufferCapacity"/>: the full
+    /// count comes back, and the caller retries with a buffer that size.
     /// </summary>
     internal static int GenerateSuccessorStatesCore(
         BgBoardState* input,
@@ -131,11 +131,14 @@ internal static unsafe class Interop
 
             var plays = MoveGenerator.GeneratePlays(_state, die1, die2);
 
+            // Never a truncated list: a buffer too small for every successor
+            // gets none of them, and the count says how large to make it.
+            if (plays.Count > bufferCapacity)
+                return plays.Count;
+
             int count = 0;
             foreach (var play in plays)
             {
-                if (count >= bufferCapacity) break;
-
                 // The managed successor rule, so the export and
                 // GenerateSuccessors cannot disagree: the play's position,
                 // flipped by the value. The off counts are this layout's own:

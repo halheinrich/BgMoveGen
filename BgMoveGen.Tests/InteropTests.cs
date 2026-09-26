@@ -26,20 +26,27 @@ public unsafe class InteropTests
         return ext;
     }
 
+    /// <summary>
+    /// The successors, fetched the way the export's contract tells a caller
+    /// to: call with a buffer, and when the count that comes back exceeds its
+    /// capacity — nothing was written — call again with a buffer of exactly
+    /// that count. The first buffer is deliberately small, so the tests that
+    /// go through here exercise the retry as well as the plain call.
+    /// </summary>
     private static BgBoardState[] RunInterop(BgBoardState input, int die1, int die2)
     {
-        var buffer = new BgBoardState[MaxSuccessors];
-        // Heap-allocate so we can take a pointer without fixed on a local
-        var inputArr = new BgBoardState[1];
-        inputArr[0] = input;
-        fixed (BgBoardState* pIn = inputArr)
-        fixed (BgBoardState* pOut = buffer)
+        var (count, buffer) = RunInteropRaw(input, die1, die2, FirstCapacity);
+        Assert.True(count >= 1, $"The export refused the call with status {count}.");
+        if (count > FirstCapacity)
         {
-            int count = Interop.GenerateSuccessorStatesCore(
-                pIn, die1, die2, pOut, MaxSuccessors);
-            return buffer[..count];
+            (int again, buffer) = RunInteropRaw(input, die1, die2, count);
+            Assert.Equal(count, again);
         }
+        return buffer[..count];
     }
+
+    /// <summary>The first buffer <see cref="RunInterop"/> offers: smaller than many rolls' successor lists.</summary>
+    private const int FirstCapacity = 8;
 
     /// <summary>
     /// Read an external board back as a position — the test's own statement
@@ -56,25 +63,45 @@ public unsafe class InteropTests
     }
 
     /// <summary>
-    /// Call the export core with a buffer pre-filled with a sentinel, and
-    /// return the status alongside the buffer, so a test can see what was and
-    /// was not written.
+    /// Call the export core once, stating <paramref name="capacity"/>, with a
+    /// buffer pre-filled with a sentinel, and return what came back alongside
+    /// the buffer, so a test can see what was and was not written. The buffer
+    /// has <paramref name="capacity"/> entries, and at least one: an empty
+    /// array pins to a null pointer, which the export refuses before it
+    /// reads the capacity.
     /// </summary>
-    private static (int Status, BgBoardState[] Buffer) RunInteropRaw(BgBoardState input, int die1, int die2)
+    private static (int Returned, BgBoardState[] Buffer) RunInteropRaw(
+        BgBoardState input, int die1, int die2, int capacity = RawCapacity)
     {
-        var buffer = new BgBoardState[MaxSuccessors];
+        var buffer = new BgBoardState[Math.Max(capacity, 1)];
         for (int i = 0; i < buffer.Length; i++)
             buffer[i].OffPlayer = Sentinel;
         var inputArr = new[] { input };
         fixed (BgBoardState* pIn = inputArr)
         fixed (BgBoardState* pOut = buffer)
         {
-            int status = Interop.GenerateSuccessorStatesCore(pIn, die1, die2, pOut, MaxSuccessors);
-            return (status, buffer);
+            int returned = Interop.GenerateSuccessorStatesCore(pIn, die1, die2, pOut, capacity);
+            return (returned, buffer);
         }
     }
 
+    /// <summary>A buffer comfortably larger than any opening roll's successor list.</summary>
+    private const int RawCapacity = 64;
+
     private const int Sentinel = 0x5EED;
+
+    /// <summary>
+    /// A race with one on-roll checker on each point from 2 to 16 and the
+    /// opponent's fifteen in its home board: 1-1 has 1,547 distinct plays.
+    /// </summary>
+    private static BoardState SpreadRace()
+    {
+        var mop = new int[26];
+        for (int p = 2; p <= 16; p++) mop[p] = 1;
+        mop[19] = -3; mop[20] = -3; mop[21] = -3;
+        mop[22] = -2; mop[23] = -2; mop[24] = -2;
+        return BoardState.FromMop(mop);
+    }
 
     // ── Tests ─────────────────────────────────────────────────────
 
@@ -124,19 +151,67 @@ public unsafe class InteropTests
     public void NullPointersAndANegativeCapacity_ReturnInvalidArgument()
     {
         var input = new[] { MakeExternal(BoardState.Standard()) };
-        var buffer = new BgBoardState[MaxSuccessors];
+        var buffer = new BgBoardState[RawCapacity];
         fixed (BgBoardState* pIn = input)
         fixed (BgBoardState* pOut = buffer)
         {
             Assert.Equal((int)Interop.Status.InvalidArgument,
-                Interop.GenerateSuccessorStatesCore(null, 3, 1, pOut, MaxSuccessors));
+                Interop.GenerateSuccessorStatesCore(null, 3, 1, pOut, RawCapacity));
             Assert.Equal((int)Interop.Status.InvalidArgument,
-                Interop.GenerateSuccessorStatesCore(pIn, 3, 1, null, MaxSuccessors));
+                Interop.GenerateSuccessorStatesCore(pIn, 3, 1, null, RawCapacity));
             Assert.Equal((int)Interop.Status.InvalidArgument,
                 Interop.GenerateSuccessorStatesCore(pIn, 3, 1, pOut, -1));
             Assert.Equal((int)Interop.Status.InvalidArgument,
                 Interop.GetStartingPositionCore(0, -1, null));
         }
+    }
+
+    [Fact]
+    public void MoreSuccessorsThanTheCapacity_ReturnsTheFullCount_AndWritesNothing()
+    {
+        // BgRLEngine's buffer holds 100; this position's 1-1 has 1,547
+        // successors. The export no longer truncates: it writes none of them
+        // and returns the full count, which the caller compares with its
+        // capacity and retries with.
+        var race = SpreadRace();
+        int count = MoveGenerator.GeneratePlays(race, 1, 1).Count;
+        Assert.Equal(1547, count);
+
+        var (returned, buffer) = RunInteropRaw(MakeExternal(race), 1, 1, capacity: 100);
+
+        Assert.Equal(count, returned);
+        Assert.All(buffer, b => Assert.Equal(Sentinel, b.OffPlayer));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(15)]   // one short of the opening 3-1's successors
+    public void ACapacityShortOfTheCount_ReturnsTheCount_AndWritesNothing(int capacity)
+    {
+        var state = BoardState.Standard();
+        int count = MoveGenerator.GeneratePlays(state, 3, 1).Count;
+        Assert.True(capacity < count, $"The opening 3-1 has {count} successors.");
+
+        var (returned, buffer) = RunInteropRaw(MakeExternal(state), 3, 1, capacity);
+
+        Assert.Equal(count, returned);
+        Assert.All(buffer, b => Assert.Equal(Sentinel, b.OffPlayer));
+    }
+
+    [Fact]
+    public void ABufferOfExactlyTheCount_ReceivesEverySuccessor_EqualToGenerateSuccessors()
+    {
+        // The retry the overflow return asks for: a buffer of exactly the
+        // count receives every successor, each the managed view's position.
+        var race = SpreadRace();
+        var managed = MoveGenerator.GenerateSuccessors(race, 1, 1);
+
+        var (returned, buffer) = RunInteropRaw(MakeExternal(race), 1, 1, capacity: managed.Count);
+
+        Assert.Equal(managed.Count, returned);
+        for (int i = 0; i < managed.Count; i++)
+            Assert.True(managed[i].Position == PositionOf(buffer[i]), $"Successor {i} differs from GenerateSuccessors.");
     }
 
     [Fact]
@@ -152,17 +227,22 @@ public unsafe class InteropTests
         var input = new[] { MakeExternal(BoardState.Standard()) };
         var malformed = new[] { MakeExternal(BoardState.Standard()) };
         malformed[0].BarPlayer = 1;   // a sixteenth on-roll checker
-        var buffer = new BgBoardState[MaxSuccessors];
+        var buffer = new BgBoardState[RawCapacity];
+        var tooSmall = new BgBoardState[1];
+        tooSmall[0].OffPlayer = Sentinel;
+        int count = MoveGenerator.GeneratePlays(BoardState.Standard(), 3, 1).Count;
         fixed (BgBoardState* pIn = input)
         fixed (BgBoardState* pBad = malformed)
         fixed (BgBoardState* pOut = buffer)
+        fixed (BgBoardState* pSmall = tooSmall)
         {
-            Assert.Equal(MoveGenerator.GeneratePlays(BoardState.Standard(), 3, 1).Count,
-                generate(pIn, 3, 1, pOut, MaxSuccessors));
-            Assert.Equal((int)Interop.Status.InvalidArgument, generate(pIn, 0, 1, pOut, MaxSuccessors));
-            Assert.Equal((int)Interop.Status.InvalidArgument, generate(pIn, 3, 7, pOut, MaxSuccessors));
-            Assert.Equal((int)Interop.Status.InvalidArgument, generate(null, 3, 1, pOut, MaxSuccessors));
-            Assert.Equal((int)Interop.Status.InvalidPosition, generate(pBad, 3, 1, pOut, MaxSuccessors));
+            Assert.Equal(count, generate(pIn, 3, 1, pOut, RawCapacity));
+            Assert.Equal(count, generate(pIn, 3, 1, pSmall, 1));   // overflow: the count, nothing written
+            Assert.Equal(Sentinel, tooSmall[0].OffPlayer);
+            Assert.Equal((int)Interop.Status.InvalidArgument, generate(pIn, 0, 1, pOut, RawCapacity));
+            Assert.Equal((int)Interop.Status.InvalidArgument, generate(pIn, 3, 7, pOut, RawCapacity));
+            Assert.Equal((int)Interop.Status.InvalidArgument, generate(null, 3, 1, pOut, RawCapacity));
+            Assert.Equal((int)Interop.Status.InvalidPosition, generate(pBad, 3, 1, pOut, RawCapacity));
 
             Assert.Equal(0, start(0, -1, pOut));
             Assert.Equal((int)Interop.Status.InvalidArgument, start(99, -1, pOut));
@@ -185,8 +265,6 @@ public unsafe class InteropTests
             {
                 var fresh = BoardState.FromMop(mop);
                 var plays = MoveGenerator.GeneratePlays(fresh, die1, die2);
-                if (plays.Count > MaxSuccessors)
-                    continue;   // the buffer truncates; not this pin's subject
 
                 var results = RunInterop(MakeExternal(fresh, offPlayer: 2, offOpponent: 5), die1, die2);
                 var managed = MoveGenerator.GenerateSuccessors(fresh, die1, die2);
@@ -251,9 +329,6 @@ public unsafe class InteropTests
                 var plays = MoveGenerator.GeneratePlays(state, d1, d2);
                 bool isPass = plays.Count == 1 && plays[0].Count == 0;
                 int expected = isPass ? 0 : plays.Count;
-
-                Assert.True(expected < MaxSuccessors,
-                    $"Roll ({d1},{d2}) has {expected} successors — raise MaxSuccessors");
 
                 var input = MakeExternal(state);
                 var results = RunInterop(input, d1, d2);
