@@ -1,4 +1,4 @@
-﻿using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Attributes;
 using BgDataTypes_Lib;
 
 namespace BgMoveGen.Benchmarks;
