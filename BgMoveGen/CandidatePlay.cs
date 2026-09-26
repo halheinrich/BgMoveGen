@@ -17,9 +17,11 @@ namespace BgMoveGen;
 ///
 /// <para>
 /// <b>Equality is reference equality.</b> No value equality is defined: the
-/// play already identifies its candidate within one call, and
-/// <see cref="BoardState"/> has no value equality to build one from. Compare
-/// plays with <see cref="BgDataTypes_Lib.Play"/> equality where that is needed.
+/// play already identifies its candidate within one call, and neither
+/// <see cref="BgDataTypes_Lib.Play"/> nor <see cref="BoardState"/> has value
+/// equality to build one from. Where plays must be compared, compare them from
+/// the input position with <see cref="BoardState.IsSamePlay"/>; boards compare
+/// as positions, through <see cref="BoardState.ToPosition"/>.
 /// </para>
 /// </summary>
 public sealed class CandidatePlay

@@ -11,6 +11,8 @@ namespace BgMoveGen;
 ///   - input and every output are always from the on-roll player's perspective.
 ///   - Each successor is flipped before writing so the next call is already oriented.
 ///   - Returns successor count. Pass = 1 (flipped state with no moves applied).
+///     An input board that is not a well-formed position returns
+///     <see cref="Status.InvalidPosition"/> and writes nothing.
 ///   - NOT thread-safe within a single process. Each OS process gets its own
 ///     instance; multiple Python processes are fully safe. If multi-thread use
 ///     ever needed, change _state to [ThreadStatic].
@@ -29,8 +31,25 @@ internal static unsafe class Interop
     /// </summary>
     public const int Version = 100;
 
-    // Reused across calls — avoids allocation in the hot path.
-    private static readonly BoardState _state = new BoardState();
+    /// <summary>
+    /// The exports' status codes: a successful call returns a count or 0, a
+    /// refused one a negative code from here.
+    /// </summary>
+    internal enum Status
+    {
+        /// <summary>An argument is outside its domain: an unknown starting-position variant.</summary>
+        InvalidArgument = -1,
+
+        /// <summary>
+        /// The input board is not a well-formed position — the invariant stated
+        /// on <see cref="BoardPosition"/>, which decides it.
+        /// </summary>
+        InvalidPosition = -2,
+    }
+
+    // Reused across calls — avoids allocation in the hot path. Reset for each
+    // call through SetPosition, the board's one whole-position write.
+    private static readonly BoardState _state = new(BoardPosition.Empty);
 
     // ── Blittable struct matching BgRLEngine's layout exactly ─────
 
@@ -68,7 +87,11 @@ internal static unsafe class Interop
         BgBoardState* outputBuffer,
         int bufferCapacity)
     {
-        FromExternal(input, _state, out int offPlayer, out int offOpponent);
+        if (!TryReadPosition(input, out var position))
+            return (int)Status.InvalidPosition;
+        _state.SetPosition(position);
+        int offPlayer = input->OffPlayer;
+        int offOpponent = input->OffOpponent;
 
         var plays = MoveGenerator.GeneratePlays(_state, die1, die2);
 
@@ -112,7 +135,7 @@ internal static unsafe class Interop
             _ => null
         };
 
-        if (s == null) return -1;   // unknown variant
+        if (s == null) return (int)Status.InvalidArgument;   // unknown variant
 
         ToExternal(s, output);
         return 0;
@@ -139,31 +162,27 @@ internal static unsafe class Interop
     // ── Translation helpers ───────────────────────────────────────
 
     /// <summary>
-    /// Translate BgRLEngine's BgBoardState into the internal int[26] representation.
+    /// Read BgRLEngine's BgBoardState as a <see cref="BoardPosition"/>, or
+    /// false when its board is not a well-formed position — the value decides,
+    /// through its non-throwing form, so malformed input is refused rather than
+    /// computed on. Allocation-free.
     /// BgRLEngine: points[0]=1-pt … points[23]=24-pt, separate bar/off fields.
-    /// Internal:   Points[1]=1-pt … Points[24]=24-pt,
-    ///             Points[25]=player bar, Points[0]=opponent bar (negative).
-    /// Also passes through offPlayer/offOpponent for use in ToExternalFlipped.
+    /// Position:   [1]=1-pt … [24]=24-pt, [25]=player bar,
+    ///             [0]=opponent bar (negative).
+    /// The off counts are not part of a position; the caller reads them.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void FromExternal(
-        BgBoardState* ext,
-        BoardState state,
-        out int offPlayer,
-        out int offOpponent)
+    private static bool TryReadPosition(BgBoardState* ext, out BoardPosition position)
     {
-        var pts = state.Points;
+        Span<int> counts = stackalloc int[26];
 
-        pts[25] = ext->BarPlayer;
-        pts[0] = -ext->BarOpponent;
+        counts[25] = ext->BarPlayer;
+        counts[0] = -ext->BarOpponent;
 
         for (int i = 0; i < 24; i++)
-            pts[i + 1] = ext->Points[i];
+            counts[i + 1] = ext->Points[i];
 
-        offPlayer = ext->OffPlayer;
-        offOpponent = ext->OffOpponent;
-
-        state.RecalcHighPoint();
+        return BoardPosition.TryCreate(counts, out position);
     }
 
     /// <summary>

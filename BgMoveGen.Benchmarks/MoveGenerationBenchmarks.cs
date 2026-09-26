@@ -106,9 +106,9 @@ public class MoveGenerationBenchmarks
     }
 
     /// <summary>
-    /// Load canary. Formats a fixed set of plays through
-    /// <see cref="MoveNotationFormatter.Format(Play)"/> — a code path no
-    /// change to the generator can reach.
+    /// Load canary. Writes a fixed set of plays in notation through
+    /// <see cref="Play.ToNotation"/> — BgDataTypes_Lib's formatter, a code
+    /// path no change to the generator can reach.
     ///
     /// <para>
     /// It exists to make a *sequential* A/B valid on this machine. The
@@ -134,7 +134,7 @@ public class MoveGenerationBenchmarks
     {
         int total = 0;
         foreach (var play in _sentinelPlays)
-            total += MoveNotationFormatter.Format(play).Length;
+            total += play.ToNotation().Length;
         return total;
     }
 
@@ -185,23 +185,22 @@ public class MoveGenerationBenchmarks
     /// </summary>
     private static BoardState BearOffPosition()
     {
-        var state = new BoardState();
+        var mop = new int[26];
 
-        state.Points[5] = 1;     // alone on the highest point
-        state.Points[4] = 3;
-        state.Points[3] = 3;
-        state.Points[2] = 4;
-        state.Points[1] = 4;
+        mop[5] = 1;     // alone on the highest point
+        mop[4] = 3;
+        mop[3] = 3;
+        mop[2] = 4;
+        mop[1] = 4;
 
-        state.Points[19] = -3;   // opponent, home board, out of contact
-        state.Points[20] = -3;
-        state.Points[21] = -3;
-        state.Points[22] = -2;
-        state.Points[23] = -2;
-        state.Points[24] = -2;
+        mop[19] = -3;   // opponent, home board, out of contact
+        mop[20] = -3;
+        mop[21] = -3;
+        mop[22] = -2;
+        mop[23] = -2;
+        mop[24] = -2;
 
-        state.RecalcHighPoint();
-        return state;
+        return BoardState.FromMop(mop);
     }
 
     /// <summary>
@@ -219,20 +218,19 @@ public class MoveGenerationBenchmarks
     /// </summary>
     private static BoardState PartialEntryPosition()
     {
-        var state = new BoardState();
+        var mop = new int[26];
 
-        state.Points[25] = 2;    // on the bar
-        state.Points[1] = 13;    // the rest, stacked and immobile under a 4
+        mop[25] = 2;    // on the bar
+        mop[1] = 13;    // the rest, stacked and immobile under a 4
 
-        state.Points[24] = -2;   // opponent's five-point board: 21 is the
-        state.Points[23] = -2;   // only entry, everything else shut
-        state.Points[22] = -2;
-        state.Points[20] = -2;
-        state.Points[19] = -2;
-        state.Points[17] = -2;   // blocks the 21 → 17 continuation
-        state.Points[2] = -3;    // opponent's remaining checkers
+        mop[24] = -2;   // opponent's five-point board: 21 is the
+        mop[23] = -2;   // only entry, everything else shut
+        mop[22] = -2;
+        mop[20] = -2;
+        mop[19] = -2;
+        mop[17] = -2;   // blocks the 21 → 17 continuation
+        mop[2] = -3;    // opponent's remaining checkers
 
-        state.RecalcHighPoint();
-        return state;
+        return BoardState.FromMop(mop);
     }
 }

@@ -19,11 +19,12 @@ https://github.com/halheinrich/BgMoveGen — branch `main`.
 
 ## Depends on
 
-`BgDataTypes_Lib` — for `Move`, `Play` (and its canonical chain form,
-`CanonicalPlay` / `PlayChain`), and `BoardState`. The shared-data
-layer owns the move primitives, play equivalence, and the mutable board
-representation; BgMoveGen contributes the move-generation algorithms over
-them. The split
+`BgDataTypes_Lib` — for `Move`, `Play`, `BoardState` and `BoardPosition`.
+The shared-data layer owns the move primitives, the mutable board and the
+immutable position value, "the same position" (`BoardPosition`'s equality),
+play identity (`BoardState.IsSamePlay` and the list match
+`IndexOfSamePlay`), and a play's notation (`Play.ToNotation`); BgMoveGen
+contributes the move-generation algorithms over them. The split
 keeps the data shape reusable from non-move-gen consumers (game substrate,
 diagram rendering, filters) without dragging them through this library.
 
@@ -39,7 +40,7 @@ Three projects under `BgMoveGen.slnx`, governed by repo-root
 
 **`BgMoveGen/`** — the library, and the one shipped surface: published to a
 NativeAOT DLL, and declared `IsAotCompatible`, so the trim, AOT and
-single-file analyzers run in its build. Four areas:
+single-file analyzers run in its build. Three areas:
 
 - **Generation** — `MoveGenerator`. Public: `GeneratePlays`, the
   resulting-position view `GenerateResultingStates`, the paired view
@@ -50,9 +51,6 @@ single-file analyzers run in its build. Four areas:
   (`Span` and `List` overloads), the two optimized paths `GenerateDoubles` /
   `GenerateNonDoubles`, and `Reference_GeneratePlays`, the brute-force ground
   truth the tests hold them to.
-- **Notation** — `MoveNotationFormatter`: a `Play` rendered as standard
-  notation (`8/5(2)`, `24/18*`); display only, over BgDataTypes_Lib's
-  canonical chain form.
 - **Click entry** — `MoveEntryState`: stateful one-click `Play` assembly
   for board UIs, reporting each click as a `ClickOutcome` (`Illegal` /
   `MoveCommitted` / `PlayCompleted`).
@@ -62,9 +60,11 @@ single-file analyzers run in its build. Four areas:
   grants `AllowUnsafeBlocks`.
 
 **`BgMoveGen.Tests/`** — xUnit, one file per library area (generation,
-notation, click entry, interop), plus `SyntheticPositions`: the
+click entry, interop), plus `SyntheticPositions`: the
 deterministic, seed-generated board corpus the breadth sweeps share (see
-Validation below).
+Validation below), and `Boards`, the hand-built boards more than one test
+class shares. A test builds a board from its counts (`BoardState.FromMop`);
+it cannot write one.
 
 **`BgMoveGen.Benchmarks/`** — a BenchmarkDotNet harness over
 `GeneratePlays`: `Program.cs` is the `BenchmarkSwitcher` entry point, and
@@ -151,23 +151,32 @@ again (same-checker continuation).
 
 ### Validating turn-boundary apply
 
-`MoveGenerator.ApplyPlay(state, play, die1, die2)` is the validating wrapper
-around `BoardState.ApplyPlay`: it re-runs `GeneratePlays` and matches the
-input against the legal set by canonical `Play` equality (order- and
-decomposition-insensitive, hit-sensitive — see BgDataTypes_Lib's
-`CanonicalPlay`), throwing `ArgumentException` on mismatch. On a match it
-applies the **generator's encoding of the matched play, not the caller's
-move sequence** — canonical equality deliberately ignores which intermediate
-points a trajectory touches, so a caller's decomposition of a legal play may
-route through a blocked point or an unacknowledged blot; the generator's
-encoding is mechanically sound by construction and reaches the identical
-final state. The contract is **throw-before-mutate**: on an illegal play,
-`state` is left byte-for-byte unchanged so callers can recover without a
-defensive clone.
+`MoveGenerator.IsLegalPlay(state, play, die1, die2)` is the one legality
+match: it re-runs `GeneratePlays` and asks BgDataTypes_Lib's list match,
+`state.IndexOfSamePlay(play, legal)`, whether the caller's play is the same
+play as a candidate. Play identity is not restated here — it is
+`BoardState.IsSamePlay`'s, whose doc comment is its one statement — but
+its consequence for this API is: a valid encoding of a legal play is legal
+whatever its move order, decomposition into hops, pairing of combined
+moves, or choice of checker to carry a hit mark, while an encoding that is
+invalid from the position (a hop onto a point the opponent holds, a hit
+mark that disagrees with the board) matches nothing.
 
-`MoveGenerator.IsLegalPlay(state, play, die1, die2)` is the standalone
-predicate over the same match rule (a shared `TryFindLegal` helper); both
-are the simple-correct re-enumeration implementation. Not hot-path —
+`MoveGenerator.ApplyPlay(state, play, die1, die2)` is the validating wrapper
+around `BoardState.ApplyPlay`: `IsLegalPlay`, throwing `ArgumentException`
+on a mismatch, then `state.ApplyPlay(play)`. **The caller's play is what is
+applied.** A match means it reaches the candidate's position, and
+`BoardState.ApplyPlay` applies a play through that same rule rather than hop
+by hop, so the board reached is the candidate's whatever encoding the caller
+wrote — and the turn has one encoding, the caller's own, which is the one a
+caller records. (Before identity was decided by position, a notation-level
+match could accept a decomposition through a blocked point, and the
+generator's encoding was applied in its place; such an encoding is now
+invalid and refused.) The contract is **throw-before-mutate**: on an illegal
+play, `state` is left unchanged so callers can recover without a defensive
+clone.
+
+Both are the simple-correct re-enumeration implementation. Not hot-path —
 callers running tight loops should drive `GeneratePlays` directly. The
 unvalidated turn-boundary primitive (`state.ApplyPlay(play)`) remains
 available for callers that have already proven legality.
@@ -175,12 +184,13 @@ available for callers that have already proven legality.
 ### MoveEntryState — state-based click legality
 
 `MoveEntryState` assembles a `Play` one click at a time. The subtle part is
-that `GeneratePlays` board-state-dedups equivalent die orderings of a
-combined single-checker move: with a non-double 5-1 it emits `11/5` only as
-`11→10→5`, never the equally-legal `11→6→5` (both intermediates open ⇒ same
-final state ⇒ one canonical play). The same collapse happens for doubles
-permutations and for bar-entry-then-hit (`bar/21 21/16*` is emitted; the
-equivalent `bar/20 20/16*` is not).
+that `GeneratePlays` emits one play per resulting position, so of the
+equivalent die orderings of a combined single-checker move it keeps one:
+with a non-double 5-1 it emits `11/5` only as `11→10→5`, never the
+equally-legal `11→6→5` (both intermediates open ⇒ same position ⇒ one
+play). The same collapse happens for doubles permutations and for
+bar-entry-then-hit (`bar/21 21/16*` is emitted; the equivalent
+`bar/20 20/16*` is not).
 
 So per-click legality is **not** anchored on the emitted move-lists. A click
 is accepted iff:
@@ -193,13 +203,13 @@ is accepted iff:
    (`CanReachTarget`, a small DFS over remaining-dice orderings against the
    precomputed target-state signature set).
 
-On completion the resulting board state identifies a unique generated play
-(the generator dedups by final state), and `CompletedPlay` is set to *that*
-canonical play — not the literal clicked moves. Two intermediate paths to the
-same final state therefore yield a `CompletedPlay` equal under `Play.Equals`
-(so quiz scoring and `allPlays.Contains` match regardless of path); paths
-that reach genuinely different states (one hits an intermediate blot, the
-other doesn't) stay distinct.
+On completion the position reached identifies exactly one generated play,
+and `CompletedPlay` is *that* play in the generator's own encoding — not the
+literal clicked moves. Two intermediate paths to the same position therefore
+yield the identical encoding (`Play.IsSameEncoding`), so a consumer matching
+it among the candidates finds it whatever the path; paths that reach
+genuinely different positions (one hits an intermediate blot, the other
+doesn't) yield different plays.
 
 Dice bookkeeping: `_turnDice` (length = play length) is the multiset played
 this turn; `_remainingDice` tracks what's unconsumed, and each committed move
@@ -230,8 +240,13 @@ from the on-roll player's perspective.
 `Interop` is an `internal static` class; `BgBoardState` is an `internal`
 nested struct of it (`Interop.BgBoardState`), existing only to marshal
 across the native boundary and distinct from `BgDataTypes_Lib.BoardState`.
-The marshaller (`FromExternal` / `ToExternalFlipped` / `ToExternal`)
-translates between the two. The `[UnmanagedCallersOnly]` exports
+The marshaller (`TryReadPosition` / `ToExternalFlipped` / `ToExternal`)
+translates between the two. `generate_successor_states` reads its input as
+a `BoardPosition` through the value's non-throwing `TryCreate`, so an input
+board that is not a well-formed position is refused with
+`Status.InvalidPosition` before anything runs, and resets its reused board
+with `BoardState.SetPosition`, the board's one whole-position write — it
+never writes counts. The `[UnmanagedCallersOnly]` exports
 (`GenerateSuccessorStates`, `GetStartingPosition`, `GetVersion`) are
 `internal` too. None of this managed visibility touches the native
 surface — NativeAOT's export discovery is attribute-based, so the C
@@ -271,14 +286,14 @@ pip-floor retry loop). BgMoveGen exposes it through the
   rolls: `Optimized_MatchesReference_AcrossSyntheticPositions` (1,000
   positions against the reference — the guard on the avoidance dedup, whose
   failure mode is a *missing* play) and
-  `GeneratePlays_CandidatesAreCanonicallyDistinct_AcrossSyntheticPositions`
-  (4,000 positions, 84,000 pairs — the guard on emitting one play twice).
-  The two are complements: the first only ever notices too few candidates,
-  the second only ever notices too many. A third,
+  `GeneratePlays_CandidatesAreDistinctPlays_AcrossSyntheticPositions`
+  (4,000 positions, 84,000 pairs — the guard on emitting one play twice,
+  asked through the list match `IndexOfSamePlay`). The two are complements:
+  the first only ever notices too few candidates, the second only ever
+  notices too many. A third,
   `GenerateResultingStates_BoardsAreDistinct_AcrossSyntheticPositions`,
-  closes the gap between them: the reference sweep compares board *sets*,
-  which a repeated board survives, and canonical distinctness of plays does
-  not by itself imply distinctness of the boards they reach — so board
+  compares the boards `GenerateResultingStates` returns: the reference sweep
+  compares board *sets*, which a repeated board survives, so board
   distinctness is compared position for position, never by hash.
 - Test categories: apply/undo round-trip; single-move generation (bar
   entry, regular, bear-off exact and overshoot, ordering); reference
@@ -290,13 +305,16 @@ pip-floor retry loop). BgMoveGen exposes it through the
   input / ownership pins, and `Play` returned by value); `IsLegalPlay` /
   `ApplyPlay` validation contract (legality round-trip, illegal-input
   throw, throw-before-mutate state preservation, dice-order invariance,
-  closed-out empty-pass case, hit-sensitive rejection of mis-encoded hits,
-  decomposed-encoding acceptance, canonicalize-then-apply, candidate-list
-  canonical distinctness on the opening board, on the two-die bear-off, and
-  across the synthetic corpus); performance benchmarks; interop (successor
-  count, flip correctness, off-count tracking, checker conservation, pass
-  detection, Bg960 conservation and seed reproducibility); MoveEntryState
-  click-by-click assembly.
+  closed-out empty-pass case, rejection of a hit mark disagreeing with the
+  board, acceptance of every valid encoding — decomposed, paired
+  differently, the hit marked on either checker — and the candidate's board
+  reached from each, rejection of a decomposition through a blocked point,
+  candidates distinct as plays on the opening board, on the two-die
+  bear-off, and across the synthetic corpus); performance benchmarks;
+  interop (successor count, flip correctness, off-count tracking, checker
+  conservation, pass detection, the reused board's reset across successive
+  calls, refusal of a malformed input board, Bg960 conservation and seed
+  reproducibility); MoveEntryState click-by-click assembly.
 
 ### Benchmarks
 
@@ -312,7 +330,7 @@ shapes; the sixth row is not a generator measurement at all:
 | `NonDoubles` | 6-4 from the opening — the two-pass avoidance-dedup path |
 | `NonDoublesBearOff` | 6-5 on a home board with a lone checker on the highest point — that path where moves encode as `(point, 0)` |
 | `AllOpeningRolls` | all 21 rolls from the opening — the aggregate signal |
-| `SentinelNotationFormat` | notation formatting of a fixed play set — the load canary, not a generator path |
+| `SentinelNotationFormat` | notation of a fixed play set, through BgDataTypes_Lib's `Play.ToNotation` — the load canary, not a generator path |
 
 `[MemoryDiagnoser]` is on because allocation, not nanoseconds, is the property
 this generator is designed around: the documented invariant is zero allocation
@@ -433,45 +451,31 @@ is no `default` instance with a null board. It defines no value equality.
 the association. Choosing among candidates, and breaking ties, is the
 consumer's decision.
 
-Every candidate `GeneratePlays` returns is canonically distinct from every
-other under `Play` equality, so a consumer may treat `Count == 1` as "no
-choice"; pinned by `GeneratePlays_CandidatesAreCanonicallyDistinct` and
-`GeneratePlays_CandidatesAreCanonicallyDistinct_AcrossSyntheticPositions`.
+The candidates `GeneratePlays` returns are distinct by resulting position:
+no two are the same play from the input (`BoardState.IsSamePlay`), so a
+consumer may treat `Count == 1` as "no choice"; pinned by
+`GeneratePlays_CandidatesAreDistinctPlays` and
+`GeneratePlays_CandidatesAreDistinctPlays_AcrossSyntheticPositions`.
 
-`IsLegalPlay` matches by canonical `Play` equality — order- and
-decomposition-insensitive, hit-sensitive. `ApplyPlay` is the validating
-wrapper around `BoardState.ApplyPlay`; on a match it applies the generator's
-encoding of the matched play (see Architecture); on rejection, the input
-state is unchanged. The unvalidated form (`state.ApplyPlay(play)`) remains
-available.
+`IsLegalPlay` matches with BgDataTypes_Lib's list match,
+`BoardState.IndexOfSamePlay`, so identity is `BoardState.IsSamePlay`'s.
+`ApplyPlay` is the validating wrapper around `BoardState.ApplyPlay`; on a
+match it applies the caller's play, which reaches the candidate's board
+(see Architecture); on rejection, the input state is unchanged. The
+unvalidated form (`state.ApplyPlay(play)`) remains available.
 
 Apply/undo at the move level are instance methods on `BoardState`
 (defined in BgDataTypes_Lib): `state.ApplyMove(move)` /
 `state.UndoMove(move)`. `MoveGenerator` does not expose move-level
 apply/undo — the data type owns that surface.
 
-### Managed — `MoveNotationFormatter`
-
-```csharp
-// Play → standard backgammon notation. No board argument needed —
-// Move.ToPt already encodes hits (negative) and bear-offs (zero).
-string notation = MoveNotationFormatter.Format(play);
-// Examples: "8/5(2)", "bar/22", "24/18*", "6/off", "21/14", "6/2(2)*".
-```
-
-Renders from the play's canonical chain form (`Play.ToCanonical()`):
-BgDataTypes_Lib's `CanonicalPlay` owns the chain-collapse semantics — hop
-fusing, hit-visibility splitting, order/decomposition insensitivity,
-deterministic chain ordering. The formatter owns display only: bar entry
-(`FrPt == 25` → "bar"), bear off (`ToPt == 0` → "off"), hits (`ToPt < 0` →
-"*" suffix), and duplicate-chain grouping — adjacent chains sharing
-`(from, |to|)` collapse to "(n)", with the "*" following the count
-("(n)*") and applied if **any** constituent chain hit.
+A play's notation is BgDataTypes_Lib's `Play.ToNotation()`; this library
+has no formatter of its own.
 
 ### Managed — `MoveEntryState`
 
 Stateful one-click `Play` assembly. Anchored on
-`MoveGenerator.GeneratePlays` as the canonical legality reference, but
+`MoveGenerator.GeneratePlays` as the legality reference, but
 **by reachable board state, not by literal move-lists** — see
 Architecture and Pitfalls below. Public surface:
 `TryAdvanceFrom(int, IReadOnlyList<int>)` (advance the clicked point by
@@ -492,6 +496,8 @@ int generate_successor_states(
 // Returns successor count (always >= 1; a pass returns one flipped state
 // with no moves applied). Each successor is flipped to the opponent's
 // perspective. See Interop.cs for the buffer-capacity cap.
+// Returns -2 (InvalidPosition), writing nothing, when the input board is
+// not a well-formed position.
 
 int get_starting_position(int variant, int seed, BgBoardState* output);
 // variant: 0 = standard, 1 = nackgammon, 2 = bg960
@@ -626,24 +632,23 @@ int get_version();
   inner-loop repeated checks, drive the generator directly.
 - **`MoveEntryState` legality is state-based, not move-list-based.** Do not
   "fix" entry by making `GeneratePlays` emit both die orderings of a combined
-  move — the distinct-outcome dedup is correct and RL state enumeration,
-  equity, and quiz `Play`-equality scoring all depend on it. Entry instead
-  accepts any click that is a legal single move from the current state *and*
-  keeps a generated final state reachable, then canonicalizes the completed
-  `Play` by resulting board state. A click can be legal even though its move
-  appears in no emitted play (e.g. `8/5` then `5/4`, since `8/4` is emitted as
-  `8/7/4`). See the MoveEntryState architecture section.
-- **`Play` equivalence is notation-level: decomposition-insensitive but
-  hit-sensitive.** `IsLegalPlay` matches by canonical `Play` equality
-  (BgDataTypes_Lib's `CanonicalPlay`): `{13/10, 10/8}` equals `{13/8}` —
-  intermediate touch-down points are not part of a play's identity — but
-  a hit-less `Move(24, 18)` is *not* the hitting `Move(24, -18)`, so a
-  mis-encoded hit is rejected rather than validated (the old hit-blind
-  key let it apply without barring the blot — silent board corruption).
-  The flip side of intermediate-insensitivity: a caller's decomposition
-  may name a blocked or blot-occupied point yet still be the legal play,
-  which is why `ApplyPlay` applies the matched candidate's encoding, never
-  the caller's hops.
+  move — one play per resulting position is correct, and RL state
+  enumeration, equity, and consumers matching a play among the candidates
+  all depend on it. Entry instead accepts any click that is a legal single
+  move from the current state *and* keeps a generated position reachable,
+  then completes as the generated play reaching the position. A click can be
+  legal even though its move appears in no emitted play (e.g. `8/5` then
+  `5/4`, since `8/4` is emitted as `8/7/4`). See the MoveEntryState
+  architecture section.
+- **Plays are compared only from a position, and never here.** Identity is
+  BgDataTypes_Lib's: `BoardState.IsSamePlay`, whose doc comment is its one
+  statement, and `IndexOfSamePlay`, the list match `IsLegalPlay` uses. `Play`
+  has no equality — `==` does not compile, and `Equals`, hashing, and
+  anything built on them (`HashSet<Play>`, `Distinct`, xUnit's
+  `Assert.Equal` on plays) throw. Do not reintroduce a board-less
+  comparison or a notation key here; compare exact encodings with
+  `Play.IsSameEncoding` only where the encoding itself is the contract (a
+  `CandidatePlay` or `CompletedPlay` is the generator's own).
 
 ## Subproject-internal next steps
 

@@ -20,8 +20,8 @@ public enum ClickOutcome
 
 /// <summary>
 /// Stateful click-by-click assembly of a <see cref="Play"/> from a starting position
-/// and dice. Anchored on <see cref="MoveGenerator.GeneratePlays"/> as the canonical
-/// reference for legality.
+/// and dice. Anchored on <see cref="MoveGenerator.GeneratePlays"/> as the reference
+/// for legality.
 ///
 /// Click semantics: one-click. <see cref="TryAdvanceFrom"/> advances the checker on a
 /// clicked <i>source</i> point by one legal move (the caller's <c>diePreference</c>
@@ -44,28 +44,29 @@ public enum ClickOutcome
 /// positive = regular) is hidden from consumers — clicks use positive point indices.
 ///
 /// Ordering ambiguity is resolved by board <i>state</i>, not by literal move-lists.
-/// <see cref="MoveGenerator.GeneratePlays"/> board-state-dedups equivalent die orderings
-/// of a combined single-checker move (e.g. with a non-double 5-1, <c>11/5</c> emitted
-/// only as <c>11→10→5</c>, never the equally-legal <c>11→6→5</c>) and likewise collapses
-/// doubles permutations. So per-click legality is <b>not</b> anchored on the emitted
-/// move-lists. A click is accepted iff (a) it is a legal single move from the current
-/// intermediate state, <b>and</b> (b) after it, the position can still complete — using
-/// the dice still to be played — to one of the final board states
-/// <see cref="MoveGenerator.GeneratePlays"/> produced. When the play completes, the
-/// resulting board state identifies a unique generated play (the generator dedups by
-/// final state), and <see cref="CompletedPlay"/> is set to <i>that</i> canonical play.
-/// Two different intermediate paths to the same final state therefore yield a
-/// <see cref="CompletedPlay"/> that compares equal under
-/// <see cref="Play.Equals(Play)"/>; paths that reach genuinely different states
-/// (e.g. one hits an intermediate blot, the other does not) stay distinct.
+/// <see cref="MoveGenerator.GeneratePlays"/> emits one play per resulting position, so
+/// of the equivalent die orderings of a combined single-checker move it keeps one (e.g.
+/// with a non-double 5-1, <c>11/5</c> is emitted only as <c>11→10→5</c>, never the
+/// equally-legal <c>11→6→5</c>) and likewise collapses doubles permutations. So
+/// per-click legality is <b>not</b> anchored on the emitted move-lists. A click is
+/// accepted iff (a) it is a legal single move from the current intermediate state,
+/// <b>and</b> (b) after it, the position can still complete — using the dice still to
+/// be played — to one of the positions <see cref="MoveGenerator.GeneratePlays"/>' plays
+/// reach. When the play completes, the position reached identifies exactly one
+/// generated play, and <see cref="CompletedPlay"/> is <i>that</i> play, in the
+/// generator's own encoding. Two different intermediate paths to the same position
+/// therefore yield the identical encoding; paths that reach genuinely different
+/// positions (e.g. one hits an intermediate blot, the other does not) yield different
+/// plays — not the same play from the starting position under
+/// <see cref="BoardState.IsSamePlay"/>.
 ///
 /// Pass positions (no legal play): <see cref="IsComplete"/> is true at construction
 /// and <see cref="CompletedPlay"/> is the empty <see cref="Play"/>.
 /// </summary>
 public sealed class MoveEntryState
 {
-    private readonly int[] _initialPoints = new int[26];
-    private readonly int _initialHighPoint;
+    /// <summary>The starting position, restored by <see cref="UndoAll"/>.</summary>
+    private readonly BoardPosition _initial;
     private readonly int _die1, _die2;
     private readonly List<Play> _allPlays;
     private readonly int _maxMoveCount;
@@ -87,16 +88,15 @@ public sealed class MoveEntryState
 
     /// <summary>
     /// Construct from an initial board state and the two dice rolled.
-    /// The initial state is captured by deep copy — subsequent mutations of the
-    /// argument do not affect this instance.
+    /// The initial position is captured as a value (<see cref="BoardState.ToPosition"/>)
+    /// — subsequent mutations of the argument do not affect this instance.
     /// </summary>
     public MoveEntryState(BoardState initialState, int die1, int die2)
     {
         ArgumentNullException.ThrowIfNull(initialState);
 
-        _currentState = initialState.Copy();
-        Array.Copy(_currentState.Points, _initialPoints, 26);
-        _initialHighPoint = _currentState.HighPointOccupied;
+        _initial = initialState.ToPosition();
+        _currentState = new BoardState(_initial);
 
         _die1 = die1;
         _die2 = die2;
@@ -526,8 +526,7 @@ public sealed class MoveEntryState
     /// </summary>
     public void UndoAll()
     {
-        Array.Copy(_initialPoints, _currentState.Points, 26);
-        _currentState.HighPointOccupied = _initialHighPoint;
+        _currentState.SetPosition(_initial);
         _appliedMoves.Clear();
         _appliedDice.Clear();
         _remainingDice.Clear();

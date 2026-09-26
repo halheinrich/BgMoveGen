@@ -9,83 +9,87 @@ public class MoveEntryStateTests
 
     private static BoardState ClosedOutOnBar()
     {
-        var s = new BoardState();
-        s.Points[25] = 1;
-        for (int i = 19; i <= 24; i++) s.Points[i] = -2;
-        s.Points[6] = 5;
-        s.Points[1] = -2;
-        s.Points[12] = -1; // pad opponent counts (need not be a legal game state)
-        s.RecalcHighPoint();
-        return s;
+        var mop = new int[26];
+        mop[25] = 1;
+        for (int i = 19; i <= 24; i++) mop[i] = -2;
+        mop[6] = 5;
+        mop[1] = -2;
+        mop[12] = -1; // pad opponent counts (need not be a legal game state)
+        return BoardState.FromMop(mop);
     }
 
     private static BoardState BearOffPosition_HighFour()
     {
         // Highest = 4, in home board.
-        var s = new BoardState();
-        s.Points[4] = 5;
-        s.Points[3] = 5;
-        s.Points[2] = 5;
-        s.Points[19] = -5;
-        s.Points[17] = -5;
-        s.Points[12] = -5;
-        s.RecalcHighPoint();
-        return s;
+        var mop = new int[26];
+        mop[4] = 5;
+        mop[3] = 5;
+        mop[2] = 5;
+        mop[19] = -5;
+        mop[17] = -5;
+        mop[12] = -5;
+        return BoardState.FromMop(mop);
     }
 
     private static BoardState BearOffPosition_HighSixWithGap()
     {
         // Highest = 6; nothing on 5; testing overshoot-not-from-highest illegality.
-        var s = new BoardState();
-        s.Points[6] = 5;
-        s.Points[3] = 5;
-        s.Points[1] = 5;
-        s.Points[19] = -5;
-        s.Points[17] = -5;
-        s.Points[12] = -5;
-        s.RecalcHighPoint();
-        return s;
+        var mop = new int[26];
+        mop[6] = 5;
+        mop[3] = 5;
+        mop[1] = 5;
+        mop[19] = -5;
+        mop[17] = -5;
+        mop[12] = -5;
+        return BoardState.FromMop(mop);
     }
 
     private static BoardState SimpleHitPosition()
     {
         // Two-checker minimal: one player on 13, one opponent blot on 10.
-        var s = new BoardState();
-        s.Points[13] = 1;
-        s.Points[10] = -1;
-        s.RecalcHighPoint();
-        return s;
+        var mop = new int[26];
+        mop[13] = 1;
+        mop[10] = -1;
+        return BoardState.FromMop(mop);
     }
 
     private static BoardState SingleCheckerOn(int point)
     {
-        var s = new BoardState();
-        s.Points[point] = 1;
-        s.RecalcHighPoint();
-        return s;
+        var mop = new int[26];
+        mop[point] = 1;
+        return BoardState.FromMop(mop);
     }
 
     private static BoardState BarEnterThenHit_5_4()
     {
         // Player on bar; opponent blot on 16. With dice (5,4):
         //   bar/20 (die 5) then 20/16* (die 4)   ← non-emitted ordering
-        //   bar/21 (die 4) then 21/16* (die 5)   ← canonical (emitted) ordering
-        // Both hit the 16 blot and reach the same final state, so GeneratePlays
-        // dedups to the canonical bar/21 21/16*.
-        var s = new BoardState();
-        s.Points[25] = 1;
-        s.Points[16] = -1;
-        s.RecalcHighPoint();
-        return s;
+        //   bar/21 (die 4) then 21/16* (die 5)   ← emitted ordering
+        // Both hit the 16 blot and reach the same position, so GeneratePlays
+        // emits the one play, as bar/21 21/16*.
+        var mop = new int[26];
+        mop[25] = 1;
+        mop[16] = -1;
+        return BoardState.FromMop(mop);
     }
 
     private static BoardState TwoCheckers(int a, int b)
     {
-        var s = new BoardState();
-        s.Points[a]++;
-        s.Points[b]++;
-        s.RecalcHighPoint();
-        return s;
+        var mop = new int[26];
+        mop[a]++;
+        mop[b]++;
+        return BoardState.FromMop(mop);
+    }
+
+    /// <summary>
+    /// <paramref name="completed"/> is one of the generator's candidates in
+    /// the generator's own encoding — <see cref="MoveEntryState.CompletedPlay"/>'s
+    /// contract, which is stronger than being the same play as one.
+    /// </summary>
+    private static void AssertIsGeneratedPlay(List<Play> allPlays, Play? completed)
+    {
+        Assert.NotNull(completed);
+        Assert.Contains(allPlays, p => p.IsSameEncoding(completed!.Value));
     }
 
     private static int OwnOnBoard(BoardState s)
@@ -112,9 +116,11 @@ public class MoveEntryStateTests
         var initial = BoardState.Standard();
         var entry = new MoveEntryState(initial, 3, 1);
 
-        initial.Points[8] = 99;
+        initial.SetPosition(BoardPosition.Empty);
 
-        Assert.NotEqual(99, entry.Current.Points[8]);
+        Assert.Equal(BoardPosition.Standard, entry.Current.ToPosition());
+        entry.UndoAll();
+        Assert.Equal(BoardPosition.Standard, entry.Current.ToPosition());
     }
 
     [Fact]
@@ -232,7 +238,7 @@ public class MoveEntryStateTests
     }
 
     [Fact]
-    public void TryAdvanceFrom_SequenceCompletesPlay_MatchesCanonicalGeneratedPlay()
+    public void TryAdvanceFrom_SequenceCompletesPlay_AsAGeneratedPlay()
     {
         // Drive a full (3,1) play with one-click advances: 8/5 then 6/5.
         var initial = BoardState.Standard();
@@ -243,7 +249,7 @@ public class MoveEntryStateTests
 
         Assert.True(entry.IsComplete);
         var allPlays = MoveGenerator.GeneratePlays(initial, 3, 1);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
@@ -259,7 +265,7 @@ public class MoveEntryStateTests
 
         Assert.True(entry.IsComplete);
         var allPlays = MoveGenerator.GeneratePlays(initial, 6, 5);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
@@ -277,17 +283,17 @@ public class MoveEntryStateTests
 
         Assert.True(entry.IsComplete);
         var allPlays = MoveGenerator.GeneratePlays(initial, 6, 6);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
     public void TryAdvanceFrom_BarEntry_AdvancesTheBarChecker()
     {
-        var s = new BoardState();
-        s.Points[25] = 1;
-        s.Points[6] = 5; s.Points[8] = 3; s.Points[13] = 5; s.Points[24] = 1;
-        s.Points[19] = -5; s.Points[17] = -3; s.Points[12] = -5; s.Points[1] = -2;
-        s.RecalcHighPoint();
+        var mop = new int[26];
+        mop[25] = 1;
+        mop[6] = 5; mop[8] = 3; mop[13] = 5; mop[24] = 1;
+        mop[19] = -5; mop[17] = -3; mop[12] = -5; mop[1] = -2;
+        var s = BoardState.FromMop(mop);
 
         var entry = new MoveEntryState(s, 3, 1);
         // Bar entries: 22 (die 3) and 24 (die 1). Prefer die 3 ⇒ enter on 22.
@@ -405,7 +411,7 @@ public class MoveEntryStateTests
         Assert.Equal(expected, new HashSet<int>(entry.LegalNextClicks));
 
         // Includes 5: advancing 8/5 then 5/4 yields 8/4, which GeneratePlays emits
-        // canonically as 8/7/4 — a move-list that does NOT contain the move 8/5.
+        // as 8/7/4 — a move-list that does NOT contain the move 8/5.
         // State-based legality still admits 5 as a source.
         Assert.Contains(5, entry.LegalNextClicks);
     }
@@ -413,11 +419,11 @@ public class MoveEntryStateTests
     [Fact]
     public void LegalNextClicks_OnBar_BarIsTheOnlySource_NonBarAdvanceIllegal()
     {
-        var s = new BoardState();
-        s.Points[25] = 1;
-        s.Points[6] = 5; s.Points[8] = 3; s.Points[13] = 5; s.Points[24] = 1;
-        s.Points[19] = -5; s.Points[17] = -3; s.Points[12] = -5; s.Points[1] = -2;
-        s.RecalcHighPoint();
+        var mop = new int[26];
+        mop[25] = 1;
+        mop[6] = 5; mop[8] = 3; mop[13] = 5; mop[24] = 1;
+        mop[19] = -5; mop[17] = -3; mop[12] = -5; mop[1] = -2;
+        var s = BoardState.FromMop(mop);
 
         var entry = new MoveEntryState(s, 3, 1);
         Assert.Equal(new HashSet<int> { 25 }, new HashSet<int>(entry.LegalNextClicks));
@@ -429,12 +435,12 @@ public class MoveEntryStateTests
     public void TryAdvanceFrom_ForcedSingleEntryDie_EntersOnTheOnlyOpenPoint()
     {
         // Bar checker; 5 of 6 entry points blocked, leaving 22 (die-3 entry) open.
-        var s = new BoardState();
-        s.Points[25] = 1;
-        s.Points[24] = -2; s.Points[23] = -2;
-        s.Points[21] = -2; s.Points[20] = -2; s.Points[19] = -2;
-        s.Points[6] = 5;
-        s.RecalcHighPoint();
+        var mop = new int[26];
+        mop[25] = 1;
+        mop[24] = -2; mop[23] = -2;
+        mop[21] = -2; mop[20] = -2; mop[19] = -2;
+        mop[6] = 5;
+        var s = BoardState.FromMop(mop);
 
         var entry = new MoveEntryState(s, 3, 1);
         Assert.Equal(new HashSet<int> { 25 }, new HashSet<int>(entry.LegalNextClicks));
@@ -449,15 +455,15 @@ public class MoveEntryStateTests
     public void TryAdvanceFrom_Doubles_ChainSequence_TracksIntermediateState()
     {
         // Single back checker chains forward 24→21→18→… with dice (3,3,3,3).
-        var s = new BoardState();
-        s.Points[24] = 1;
-        s.Points[2] = -2;
-        s.Points[1] = -2;
-        s.Points[6] = 5;
-        s.Points[5] = 5;
-        s.Points[4] = 4;
-        s.Points[19] = -5; s.Points[17] = -3; s.Points[12] = -3;
-        s.RecalcHighPoint();
+        var mop = new int[26];
+        mop[24] = 1;
+        mop[2] = -2;
+        mop[1] = -2;
+        mop[6] = 5;
+        mop[5] = 5;
+        mop[4] = 4;
+        mop[19] = -5; mop[17] = -3; mop[12] = -3;
+        var s = BoardState.FromMop(mop);
 
         var entry = new MoveEntryState(s, 3, 3);
         Assert.Contains(24, entry.LegalNextClicks);
@@ -471,11 +477,11 @@ public class MoveEntryStateTests
 
     // ── Combined single-checker moves: both die orderings ─────────
     //
-    // Regression: GeneratePlays board-state-dedups equivalent die orderings
-    // (both intermediates open → same final square) to one canonical play.
-    // MoveEntryState must accept *either* physical path (the caller picks the die
-    // via diePreference), and must canonicalize the completed Play so it equals the
-    // generated one regardless of path taken.
+    // Regression: GeneratePlays emits one play per resulting position, so of the
+    // equivalent die orderings (both intermediates open → same final square) it
+    // keeps one. MoveEntryState must accept *either* physical path (the caller
+    // picks the die via diePreference), and must complete as the generated play,
+    // in its encoding, regardless of path taken.
 
     [Fact]
     public void TryAdvanceFrom_CombinedSingleChecker_EmittedOrdering_11to10to5_Completes()
@@ -491,7 +497,7 @@ public class MoveEntryStateTests
         Assert.True(entry.IsComplete);
         Assert.Equal(1, entry.Current.Points[5]);
         var allPlays = MoveGenerator.GeneratePlays(initial, 5, 1);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
@@ -499,7 +505,7 @@ public class MoveEntryStateTests
     {
         // Same position, the OTHER ordering: 11→6 (die 5) → 5 (die 1).
         // GeneratePlays emits only 11/10/5 for this position; this path must
-        // still be enterable and canonicalize to the same Play.
+        // still be enterable and complete as the same generated play.
         var initial = SingleCheckerOn(11);
         var entry = new MoveEntryState(initial, 5, 1);
 
@@ -510,11 +516,11 @@ public class MoveEntryStateTests
         Assert.True(entry.IsComplete);
         Assert.Equal(1, entry.Current.Points[5]);
         var allPlays = MoveGenerator.GeneratePlays(initial, 5, 1);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
-    public void TryAdvanceFrom_CombinedSingleChecker_BothOrderings_YieldEqualCanonicalPlay()
+    public void TryAdvanceFrom_CombinedSingleChecker_BothOrderings_YieldTheSameGeneratedEncoding()
     {
         var initial = SingleCheckerOn(11);
 
@@ -528,8 +534,8 @@ public class MoveEntryStateTests
 
         Assert.True(viaTen.IsComplete);
         Assert.True(viaSix.IsComplete);
-        // Same canonical Play regardless of the intermediate path the user took.
-        Assert.Equal(viaTen.CompletedPlay!.Value, viaSix.CompletedPlay!.Value);
+        // The identical generated encoding, whichever intermediate path the user took.
+        Assert.True(viaTen.CompletedPlay!.Value.IsSameEncoding(viaSix.CompletedPlay!.Value));
     }
 
     [Fact]
@@ -537,18 +543,18 @@ public class MoveEntryStateTests
     {
         // Full-board reconstruction of the reported 5-1 bug. A back checker on 11
         // can play 11/5 as a combined move; both intermediates (10 and 6) are open,
-        // so GeneratePlays emits a single canonical ordering.
-        var s = new BoardState();
-        s.Points[24] = 2;
-        s.Points[13] = 4;
-        s.Points[11] = 1;
-        s.Points[8] = 3;
-        s.Points[6] = 5;
-        s.Points[19] = -5;
-        s.Points[17] = -3;
-        s.Points[12] = -5;
-        s.Points[1] = -2;
-        s.RecalcHighPoint();
+        // so GeneratePlays emits a single ordering.
+        var mop = new int[26];
+        mop[24] = 2;
+        mop[13] = 4;
+        mop[11] = 1;
+        mop[8] = 3;
+        mop[6] = 5;
+        mop[19] = -5;
+        mop[17] = -3;
+        mop[12] = -5;
+        mop[1] = -2;
+        var s = BoardState.FromMop(mop);
 
         var allPlays = MoveGenerator.GeneratePlays(s, 5, 1);
 
@@ -557,16 +563,16 @@ public class MoveEntryStateTests
         a.TryAdvanceFrom(11, new[] { 1, 5 });
         a.TryAdvanceFrom(10, new[] { 5, 1 });
         Assert.True(a.IsComplete);
-        Assert.Contains(allPlays, p => p.Equals(a.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, a.CompletedPlay);
 
         // Path B: 11→6→5 (the ordering GeneratePlays did not emit)
         var b = new MoveEntryState(s, 5, 1);
         Assert.Equal(ClickOutcome.MoveCommitted, b.TryAdvanceFrom(11, new[] { 5, 1 }));
         Assert.Equal(ClickOutcome.PlayCompleted, b.TryAdvanceFrom(6, new[] { 1, 5 }));
         Assert.True(b.IsComplete);
-        Assert.Contains(allPlays, p => p.Equals(b.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, b.CompletedPlay);
 
-        Assert.Equal(a.CompletedPlay!.Value, b.CompletedPlay!.Value);
+        Assert.True(a.CompletedPlay!.Value.IsSameEncoding(b.CompletedPlay!.Value));
     }
 
     // ── Hit on the second move (both bar-entry orderings) ─────────
@@ -584,7 +590,7 @@ public class MoveEntryStateTests
         Assert.Equal(1, entry.Current.Points[16]);   // player landed on 16
         Assert.Equal(-1, entry.Current.Points[0]);   // opponent sent to bar
         var allPlays = MoveGenerator.GeneratePlays(initial, 5, 4);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
@@ -599,7 +605,7 @@ public class MoveEntryStateTests
         Assert.True(entry.IsComplete);
         Assert.Equal(-1, entry.Current.Points[0]);
         var allPlays = MoveGenerator.GeneratePlays(initial, 5, 4);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     // ── Edge cases: blocked / blot intermediates, doubles permutations ──
@@ -610,10 +616,10 @@ public class MoveEntryStateTests
         // Checker on 11, dice (5,1), opponent owns 10 (≥2). The die-1-first ordering
         // 11→10 is blocked, so only 11→6→5 is legal. Preferring die 1 still advances
         // via the only legal move (11→6).
-        var s = new BoardState();
-        s.Points[11] = 1;
-        s.Points[10] = -2;
-        s.RecalcHighPoint();
+        var mop = new int[26];
+        mop[11] = 1;
+        mop[10] = -2;
+        var s = BoardState.FromMop(mop);
 
         var entry = new MoveEntryState(s, 5, 1);
         Assert.Contains(11, entry.LegalNextClicks);
@@ -623,7 +629,7 @@ public class MoveEntryStateTests
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAdvanceFrom(6, new[] { 1, 5 }));
 
         var allPlays = MoveGenerator.GeneratePlays(s, 5, 1);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
@@ -634,10 +640,10 @@ public class MoveEntryStateTests
         //   11→6 (die 5) → 5 (die 1)        — leaves the 10 blot untouched
         // Different final states ⇒ GeneratePlays keeps BOTH, and the two paths must
         // yield distinct (non-equal) completed plays.
-        var s = new BoardState();
-        s.Points[11] = 1;
-        s.Points[10] = -1; // blot
-        s.RecalcHighPoint();
+        var mop = new int[26];
+        mop[11] = 1;
+        mop[10] = -1; // blot
+        var s = BoardState.FromMop(mop);
 
         var allPlays = MoveGenerator.GeneratePlays(s, 5, 1);
 
@@ -646,17 +652,17 @@ public class MoveEntryStateTests
         hitPath.TryAdvanceFrom(10, new[] { 5, 1 }); // 10→5
         Assert.True(hitPath.IsComplete);
         Assert.Equal(-1, hitPath.Current.Points[0]); // opponent on bar
-        Assert.Contains(allPlays, p => p.Equals(hitPath.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, hitPath.CompletedPlay);
 
         var noHitPath = new MoveEntryState(s, 5, 1);
         noHitPath.TryAdvanceFrom(11, new[] { 5, 1 }); // 11→6
         noHitPath.TryAdvanceFrom(6, new[] { 1, 5 });  // 6→5
         Assert.True(noHitPath.IsComplete);
         Assert.Equal(-1, noHitPath.Current.Points[10]); // blot survives
-        Assert.Contains(allPlays, p => p.Equals(noHitPath.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, noHitPath.CompletedPlay);
 
-        // Genuinely different outcomes — must NOT collapse to one canonical play.
-        Assert.NotEqual(hitPath.CompletedPlay!.Value, noHitPath.CompletedPlay!.Value);
+        // Genuinely different outcomes — must NOT be the same play.
+        Assert.False(s.IsSamePlay(hitPath.CompletedPlay!.Value, noHitPath.CompletedPlay!.Value));
     }
 
     [Fact]
@@ -664,9 +670,9 @@ public class MoveEntryStateTests
     {
         // Two checkers on 6, dice (2,2): 6/2(2) via 6→4→2 per checker. Enter in an
         // interleaved order (first checker all the way, then second).
-        var s = new BoardState();
-        s.Points[6] = 2;
-        s.RecalcHighPoint();
+        var mop = new int[26];
+        mop[6] = 2;
+        var s = BoardState.FromMop(mop);
 
         var entry = new MoveEntryState(s, 2, 2);
         entry.TryAdvanceFrom(6, new[] { 2 }); // 6→4 (checker A)
@@ -678,7 +684,7 @@ public class MoveEntryStateTests
         Assert.True(entry.IsComplete);
         Assert.Equal(2, entry.Current.Points[2]);
         var allPlays = MoveGenerator.GeneratePlays(s, 2, 2);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     // ── Undo ──────────────────────────────────────────────────────
@@ -775,7 +781,7 @@ public class MoveEntryStateTests
         Assert.Equal(0, OwnOnBoard(entry.Current)); // both borne off → max = 2
 
         var allPlays = MoveGenerator.GeneratePlays(initial, 2, 1);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
@@ -785,17 +791,17 @@ public class MoveEntryStateTests
         // cannot bear off (point 1 empty, 6 isn't reachable-off by a 1). So every
         // completion bears off exactly one checker, but the die-1 move (3/2 vs 2/1)
         // leaves two DIFFERENT boards — a tie for the maximum ⇒ ambiguous ⇒ no-op.
-        var s = new BoardState();
-        s.Points[6] = 1; s.Points[3] = 1; s.Points[2] = 1;
-        s.RecalcHighPoint();
+        var mop = new int[26];
+        mop[6] = 1; mop[3] = 1; mop[2] = 1;
+        var s = BoardState.FromMop(mop);
         var entry = new MoveEntryState(s, 6, 1);
 
-        var before = entry.Current.ToMop();
+        var before = entry.Current.ToPosition();
         Assert.Equal(ClickOutcome.Illegal, entry.TryBearOffMax());
 
         Assert.Empty(entry.AppliedMoves);
         Assert.False(entry.IsComplete);
-        Assert.Equal(before, entry.Current.ToMop());
+        Assert.Equal(before, entry.Current.ToPosition());
     }
 
     [Fact]
@@ -804,12 +810,12 @@ public class MoveEntryStateTests
         // Standard (3,1) opener: nothing is anywhere near bearing off.
         var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
 
-        var before = entry.Current.ToMop();
+        var before = entry.Current.ToPosition();
         Assert.Equal(ClickOutcome.Illegal, entry.TryBearOffMax());
 
         Assert.Empty(entry.AppliedMoves);
         Assert.False(entry.IsComplete);
-        Assert.Equal(before, entry.Current.ToMop());
+        Assert.Equal(before, entry.Current.ToPosition());
     }
 
     [Fact]
@@ -830,7 +836,7 @@ public class MoveEntryStateTests
         Assert.Equal(0, OwnOnBoard(entry.Current));
 
         var allPlays = MoveGenerator.GeneratePlays(initial, 6, 1);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
@@ -839,9 +845,9 @@ public class MoveEntryStateTests
         // Checker on 4 and two on 2, dice (2,2). The four 2s exactly clear the board
         // (4→2→0 consumes two, each 2-checker one), so the only completion bears off
         // all three. Unique max ⇒ tray clears the board.
-        var s = new BoardState();
-        s.Points[4] = 1; s.Points[2] = 2;
-        s.RecalcHighPoint();
+        var mop = new int[26];
+        mop[4] = 1; mop[2] = 2;
+        var s = BoardState.FromMop(mop);
         var entry = new MoveEntryState(s, 2, 2);
 
         Assert.Equal(3, OwnOnBoard(entry.Current));
@@ -850,7 +856,7 @@ public class MoveEntryStateTests
         Assert.Equal(0, OwnOnBoard(entry.Current)); // 3 borne off
 
         var allPlays = MoveGenerator.GeneratePlays(s, 2, 2);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
@@ -882,7 +888,7 @@ public class MoveEntryStateTests
 
         Assert.Equal(1, BearOffCount(entry.CompletedPlay!.Value)); // exactly one ToPt == 0
         var allPlays = MoveGenerator.GeneratePlays(initial, 6, 2);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
@@ -896,13 +902,13 @@ public class MoveEntryStateTests
         var entry = new MoveEntryState(s, 2, 1);
 
         Assert.False(entry.IsComplete);
-        var before = entry.Current.ToMop();
+        var before = entry.Current.ToPosition();
 
         Assert.Equal(ClickOutcome.Illegal, entry.TryBearOffMax());
 
         Assert.Empty(entry.AppliedMoves);
         Assert.False(entry.IsComplete);
-        Assert.Equal(before, entry.Current.ToMop());
+        Assert.Equal(before, entry.Current.ToPosition());
     }
 
     // ── One-click make-the-point (TryMakePoint) ───────────────────
@@ -926,9 +932,9 @@ public class MoveEntryStateTests
         Assert.Equal(2, entry.Current.Points[8]); // 3 - 1
         Assert.Equal(4, entry.Current.Points[6]); // 5 - 1
 
-        // Canonical Play equality identifies the same play regardless of click path.
+        // The completed play is the generator's own candidate, whatever the click path.
         var allPlays = MoveGenerator.GeneratePlays(initial, 3, 1);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
@@ -936,11 +942,11 @@ public class MoveEntryStateTests
     {
         // Own on 8 and 6, opponent blot on 5, dice (3,1). 8/5* hits and 6/5 covers;
         // the make lands the point over the blot, sending the opponent to the bar.
-        var s = new BoardState();
-        s.Points[8] = 1;
-        s.Points[6] = 1;
-        s.Points[5] = -1; // opponent blot
-        s.RecalcHighPoint();
+        var mop = new int[26];
+        mop[8] = 1;
+        mop[6] = 1;
+        mop[5] = -1; // opponent blot
+        var s = BoardState.FromMop(mop);
         var entry = new MoveEntryState(s, 3, 1);
 
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(5));
@@ -953,7 +959,7 @@ public class MoveEntryStateTests
         Assert.Contains(entry.AppliedMoves, m => m.ToPt == -5);
 
         var allPlays = MoveGenerator.GeneratePlays(s, 3, 1);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
@@ -961,9 +967,9 @@ public class MoveEntryStateTests
     {
         // Two back checkers on 24, dice (4,4). Making the 20-point is the minimal
         // (two-sub-move) placement 24/20 24/20, leaving two 4s for the user.
-        var s = new BoardState();
-        s.Points[24] = 2;
-        s.RecalcHighPoint();
+        var mop = new int[26];
+        mop[24] = 2;
+        var s = BoardState.FromMop(mop);
         var entry = new MoveEntryState(s, 4, 4);
 
         Assert.Equal(ClickOutcome.MoveCommitted, entry.TryMakePoint(20));
@@ -978,7 +984,7 @@ public class MoveEntryStateTests
         Assert.True(entry.IsComplete);
 
         var allPlays = MoveGenerator.GeneratePlays(s, 4, 4);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
@@ -987,10 +993,10 @@ public class MoveEntryStateTests
         // Own on 12 (= P+d) and 14 (= P+2d), dice (2,2), make the 10-point. No
         // two-sub-move make exists (only one checker is one die from 10), so the
         // minimal make is three sub-moves: 12/10 plus 14/12/10. One die left over.
-        var s = new BoardState();
-        s.Points[12] = 1;
-        s.Points[14] = 1;
-        s.RecalcHighPoint();
+        var mop = new int[26];
+        mop[12] = 1;
+        mop[14] = 1;
+        var s = BoardState.FromMop(mop);
         var entry = new MoveEntryState(s, 2, 2);
 
         Assert.Equal(ClickOutcome.MoveCommitted, entry.TryMakePoint(10));
@@ -1005,7 +1011,7 @@ public class MoveEntryStateTests
         Assert.True(entry.IsComplete);
 
         var allPlays = MoveGenerator.GeneratePlays(s, 2, 2);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
@@ -1015,9 +1021,9 @@ public class MoveEntryStateTests
         // make is the four-sub-move {2,2} config 8/6/4 8/6/4 — no shorter make exists
         // (no checker is one or two dice from 4 except via 8), and the rival {1,3}
         // config (a checker on 6 and one on 10) is absent. Single config ⇒ commits.
-        var s = new BoardState();
-        s.Points[8] = 2;
-        s.RecalcHighPoint();
+        var mop = new int[26];
+        mop[8] = 2;
+        var s = BoardState.FromMop(mop);
         var entry = new MoveEntryState(s, 2, 2);
 
         Assert.Equal(ClickOutcome.PlayCompleted, entry.TryMakePoint(4));
@@ -1027,7 +1033,7 @@ public class MoveEntryStateTests
         Assert.Equal(0, entry.Current.Points[8]);
 
         var allPlays = MoveGenerator.GeneratePlays(s, 2, 2);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
@@ -1036,9 +1042,9 @@ public class MoveEntryStateTests
         // A single checker on 8, dice (3,1), click the empty 5-point. The point is
         // unmakeable (one checker cannot put two on it), so the move-one fallback
         // commits the single sub-move that lands on 5: 8/5 (die 3). Die 1 remains.
-        var s = new BoardState();
-        s.Points[8] = 1;
-        s.RecalcHighPoint();
+        var mop = new int[26];
+        mop[8] = 1;
+        var s = BoardState.FromMop(mop);
         var entry = new MoveEntryState(s, 3, 1);
 
         // Only die 3 reaches 5 in one step, so the landing is unique.
@@ -1056,11 +1062,11 @@ public class MoveEntryStateTests
         // Standard (3,1): 6 holds own checkers — an advance source, never a make
         // destination. Rejected without inspecting reachability.
         var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
-        var before = entry.Current.ToMop();
+        var before = entry.Current.ToPosition();
 
         Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(6));
         Assert.Empty(entry.AppliedMoves);
-        Assert.Equal(before, entry.Current.ToMop());
+        Assert.Equal(before, entry.Current.ToPosition());
     }
 
     [Fact]
@@ -1072,11 +1078,11 @@ public class MoveEntryStateTests
         // Neither make nor land-one has a candidate. (The 4-point would now land via
         // the combined 8/7/4, so the genuinely-unreachable point moved to 1.)
         var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
-        var before = entry.Current.ToMop();
+        var before = entry.Current.ToPosition();
 
         Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(1));
         Assert.Empty(entry.AppliedMoves);
-        Assert.Equal(before, entry.Current.ToMop());
+        Assert.Equal(before, entry.Current.ToPosition());
     }
 
     [Fact]
@@ -1114,12 +1120,11 @@ public class MoveEntryStateTests
         // Own checker on 18; opponent anchor on 12 blocks the 18/12 (die-6) start, so
         // the only route to 10 is 18/16 (die 2) then 16/10 (die 6). blotPoint carries
         // the opponent blot (10 for the hit case, 0 to leave the point empty).
-        var s = new BoardState();
-        s.Points[18] = 1;
-        s.Points[12] = -2;        // opponent anchor — blocks 18→12
-        if (blotPoint != 0) s.Points[blotPoint] = -1;
-        s.RecalcHighPoint();
-        return s;
+        var mop = new int[26];
+        mop[18] = 1;
+        mop[12] = -2;        // opponent anchor — blocks 18→12
+        if (blotPoint != 0) mop[blotPoint] = -1;
+        return BoardState.FromMop(mop);
     }
 
     [Fact]
@@ -1137,7 +1142,7 @@ public class MoveEntryStateTests
         Assert.Equal(-1, entry.Current.Points[0]); // opponent blot sent to the bar
 
         var allPlays = MoveGenerator.GeneratePlays(s, 6, 2);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
@@ -1154,7 +1159,7 @@ public class MoveEntryStateTests
         Assert.Equal(0, entry.Current.Points[0]);  // nothing hit
 
         var allPlays = MoveGenerator.GeneratePlays(s, 6, 2);
-        Assert.Contains(allPlays, p => p.Equals(entry.CompletedPlay!.Value));
+        AssertIsGeneratedPlay(allPlays, entry.CompletedPlay);
     }
 
     [Fact]
@@ -1164,11 +1169,11 @@ public class MoveEntryStateTests
         // home, so 24 is unreachable by any path. Neither make nor land-one applies.
         var s = CombinedHitRepro(blotPoint: 10);
         var entry = new MoveEntryState(s, 6, 2);
-        var before = entry.Current.ToMop();
+        var before = entry.Current.ToPosition();
 
         Assert.Equal(ClickOutcome.Illegal, entry.TryMakePoint(24));
         Assert.Empty(entry.AppliedMoves);
-        Assert.Equal(before, entry.Current.ToMop());
+        Assert.Equal(before, entry.Current.ToPosition());
     }
 
     [Fact]
@@ -1179,10 +1184,10 @@ public class MoveEntryStateTests
         // on 10 needs three die-steps but only two dice are available — so the
         // fallback lands one checker, and the minimal-depth (single-die 12/10) landing
         // is preferred over the deeper 18-combined one, leaving the larger die.
-        var s = new BoardState();
-        s.Points[12] = 1;
-        s.Points[18] = 1;
-        s.RecalcHighPoint();
+        var mop = new int[26];
+        mop[12] = 1;
+        mop[18] = 1;
+        var s = BoardState.FromMop(mop);
         var entry = new MoveEntryState(s, 6, 2);
 
         Assert.Equal(ClickOutcome.MoveCommitted, entry.TryMakePoint(10));

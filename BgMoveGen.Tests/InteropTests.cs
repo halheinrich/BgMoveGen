@@ -41,7 +41,107 @@ public unsafe class InteropTests
         }
     }
 
+    /// <summary>
+    /// Read an external board back as a position — the test's own statement
+    /// of BgRLEngine's layout, independent of the one under test.
+    /// </summary>
+    private static BoardPosition PositionOf(BgBoardState ext)
+    {
+        var counts = new int[26];
+        counts[0] = -ext.BarOpponent;
+        for (int i = 0; i < 24; i++)
+            counts[i + 1] = ext.Points[i];
+        counts[25] = ext.BarPlayer;
+        return new BoardPosition(counts);
+    }
+
+    /// <summary>
+    /// Call the export core with a buffer pre-filled with a sentinel, and
+    /// return the status alongside the buffer, so a test can see what was and
+    /// was not written.
+    /// </summary>
+    private static (int Status, BgBoardState[] Buffer) RunInteropRaw(BgBoardState input, int die1, int die2)
+    {
+        var buffer = new BgBoardState[MaxSuccessors];
+        for (int i = 0; i < buffer.Length; i++)
+            buffer[i].OffPlayer = Sentinel;
+        var inputArr = new[] { input };
+        fixed (BgBoardState* pIn = inputArr)
+        fixed (BgBoardState* pOut = buffer)
+        {
+            int status = Interop.GenerateSuccessorStatesCore(pIn, die1, die2, pOut, MaxSuccessors);
+            return (status, buffer);
+        }
+    }
+
+    private const int Sentinel = 0x5EED;
+
     // ── Tests ─────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("16 on-roll checkers")]
+    [InlineData("an opposing checker on the on-roll bar")]
+    [InlineData("an on-roll checker on the opponent's bar")]
+    [InlineData("a count beyond a side's checkers")]
+    public void MalformedInputBoard_IsRefusedAsInvalidPosition_AndNothingIsWritten(string fault)
+    {
+        // The reused board is reset through BoardState.SetPosition, whose
+        // argument is a well-formed position by its own invariant, so an input
+        // that does not form one is refused before any generation runs.
+        var input = MakeExternal(BoardState.Standard());
+        switch (fault)
+        {
+            case "16 on-roll checkers": input.BarPlayer = 1; break;
+            case "an opposing checker on the on-roll bar": input.BarPlayer = -1; break;
+            case "an on-roll checker on the opponent's bar": input.BarOpponent = -1; break;
+            case "a count beyond a side's checkers": input.Points[12] = 16; break;
+        }
+
+        var (status, buffer) = RunInteropRaw(input, 3, 1);
+
+        Assert.Equal((int)Interop.Status.InvalidPosition, status);
+        Assert.All(buffer, b => Assert.Equal(Sentinel, b.OffPlayer));
+    }
+
+    [Fact]
+    public void SuccessiveCalls_ResetTheReusedBoard_EachMatchingAFreshBoard()
+    {
+        // The export reuses one board across calls. Back to back, calls on
+        // different positions must each produce exactly the successors a
+        // fresh board of that position gives: each generated play's position,
+        // flipped to the next mover, with the off counts carried and swapped.
+        // A reset that left anything behind — a stale high point included,
+        // which the generator scans from — shows up as a different successor.
+        foreach ((int index, int[] mop) in SyntheticPositions.Corpus(300).Index())
+        {
+            foreach ((int die1, int die2) in SyntheticPositions.AllRolls())
+            {
+                var fresh = BoardState.FromMop(mop);
+                var plays = MoveGenerator.GeneratePlays(fresh, die1, die2);
+                if (plays.Count > MaxSuccessors)
+                    continue;   // the buffer truncates; not this pin's subject
+
+                var results = RunInterop(MakeExternal(fresh, offPlayer: 2, offOpponent: 5), die1, die2);
+
+                Assert.Equal(plays.Count, results.Length);
+                for (int i = 0; i < plays.Count; i++)
+                {
+                    var after = fresh.Copy();
+                    int bearOffs = 0;
+                    foreach (var move in plays[i])
+                    {
+                        after.ApplyMove(move);
+                        if (move.ToPt == 0) bearOffs++;
+                    }
+
+                    string where = $"Position {index} {die1}-{die2} successor {i}";
+                    Assert.True(after.ToPosition().Flipped() == PositionOf(results[i]), where);
+                    Assert.True(results[i].OffPlayer == 5, where);
+                    Assert.True(results[i].OffOpponent == 2 + bearOffs, where);
+                }
+            }
+        }
+    }
 
     [Fact]
     public void StandardPosition_OpeningRoll_3_1_MatchesGeneratePlays()
@@ -96,11 +196,11 @@ public unsafe class InteropTests
     [Fact]
     public void PassPosition_ReturnsFlippedState()
     {
-        var s = new BoardState();
-        s.Points[25] = 2;
-        s.Points[19] = -2; s.Points[20] = -2; s.Points[21] = -2;
-        s.Points[22] = -2; s.Points[23] = -2; s.Points[24] = -2;
-        s.RecalcHighPoint();
+        var mop = new int[26];
+        mop[25] = 2;
+        mop[19] = -2; mop[20] = -2; mop[21] = -2;
+        mop[22] = -2; mop[23] = -2; mop[24] = -2;
+        var s = BoardState.FromMop(mop);
 
         var results = RunInterop(MakeExternal(s), 3, 1);
 
