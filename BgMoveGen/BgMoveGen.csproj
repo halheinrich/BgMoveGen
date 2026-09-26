@@ -27,7 +27,11 @@
        outright is the IsTrimmable assembly metadata, which the WebAssembly SDK's
        partial trim mode reads to decide whether to trim this assembly at all.
        Per-project deliberately — the test and benchmark projects are not
-       shipped surfaces. -->
+       shipped surfaces. Pinned by
+       TrimPostureTests.TheLibrary_DeclaresItselfAotCompatibleAndTrimmable
+       (halheinrich/backgammon#228): the declaration and the IsTrimmable
+       metadata it adds must both be in the built assembly. -->
+
   <PropertyGroup>
     <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>

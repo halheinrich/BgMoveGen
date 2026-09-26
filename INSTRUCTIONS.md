@@ -40,7 +40,9 @@ Three projects under `BgMoveGen.slnx`, governed by repo-root
 
 **`BgMoveGen/`** — the library, and the one shipped surface: published to a
 NativeAOT DLL, and declared `IsAotCompatible`, so the trim, AOT and
-single-file analyzers run in its build. Three areas:
+single-file analyzers run in its build — a declaration
+`TrimPostureTests` pins by reading the metadata it leaves in the built
+assembly (halheinrich/backgammon#228). Three areas:
 
 - **Generation** — `MoveGenerator`. Public: `GeneratePlays`, the
   resulting-position view `GenerateResultingStates`, the paired view
