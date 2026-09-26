@@ -199,9 +199,9 @@ is accepted iff:
    of the dice still to be played — enumerated via `SingleMoves`, which already
    enforces bar-first, bear-off, and hit rules), **and**
 2. after applying it, the position can still complete — using the dice that
-   remain — to one of the final board states `GeneratePlays` produced
+   remain — to one of the positions `GeneratePlays`' plays reach
    (`CanReachTarget`, a small DFS over remaining-dice orderings against the
-   precomputed target-state signature set).
+   precomputed target positions).
 
 On completion the position reached identifies exactly one generated play,
 and `CompletedPlay` is *that* play in the generator's own encoding — not the
@@ -213,8 +213,26 @@ doesn't) yield different plays.
 
 Dice bookkeeping: `_turnDice` (length = play length) is the multiset played
 this turn; `_remainingDice` tracks what's unconsumed, and each committed move
-records the die it used so `UndoLast` can restore it. Target states are keyed
-by an FNV-1a signature matching the generator's dedup hash.
+records the die it used so `UndoLast` can restore it. Target positions are
+keyed by `BoardPosition`, BgDataTypes_Lib's one "same position", whose
+equality decides (a hash only buckets), and each is computed by the
+generator's `ResultingPositionOf` — see "One same position" below.
+
+### One same position
+
+Every question of "is this the same position" in this library is asked of
+BgDataTypes_Lib's `BoardPosition` value, whose equality decides it
+(halheinrich/backgammon#245): the reference's dedup, `MoveEntryState`'s
+target positions and its landing and completion searches, and the tests'
+board comparisons. There is no board hash of this library's own. The
+position a generated play reaches is computed in one place,
+`MoveGenerator.ResultingPositionOf`: the play's moves applied with the raw
+pair, the position taken as a value (`ToPosition`), the moves undone —
+allocation-free, and the input left as it was. The candidate views build
+their boards from it, and the reference and `MoveEntryState` key on it.
+The hot path's own dedup is unaffected: `GeneratePlays` avoids duplicates
+by construction (ordered doubles, avoidance for non-doubles) and compares
+no positions at all.
 
 ### Interop layout
 
@@ -274,7 +292,7 @@ pip-floor retry loop). BgMoveGen exposes it through the
 ### Validation
 
 - `Reference_GeneratePlays` — brute-force recursive enumeration of both die
-  orderings, deduplicated by final board state (FNV-1a hash). Guaranteed
+  orderings, one play kept per resulting position (`BoardPosition`). Guaranteed
   correct. Ground truth.
 - `ReferenceCorrectnessTests.Optimized_MatchesReference` — parameterized
   harness comparing optimized `GeneratePlays` to `Reference_GeneratePlays`
@@ -441,9 +459,9 @@ made explicit, for consumers that choose among resulting positions and must
 report the play reaching the chosen one: candidate `i` is `GeneratePlays`'
 play `i` (the generator's own encoding) and the board
 `GenerateResultingStates` returns at `i`. Every guarantee above carries
-over. Both methods build their boards through one private routine,
-`ResultingStateOf` — the single source of the play → board rule — so the
-two views cannot drift apart. `CandidatePlay` is a sealed class with an
+over. Both methods build each board from the position the play reaches,
+computed by one routine, `ResultingPositionOf` — the single source of the
+play → position rule — so the two views cannot drift apart. `CandidatePlay` is a sealed class with an
 internal constructor: only BgMoveGen pairs a play with a board, and there
 is no `default` instance with a null board. It defines no value equality.
 `Play` is returned by value, so its stored copy cannot be modified;

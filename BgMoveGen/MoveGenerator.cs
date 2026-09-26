@@ -409,20 +409,6 @@ public static class MoveGenerator
     }
 
     /// <summary>
-    /// Fast board hash for dedup. Uses FNV-1a over the 26 points.
-    /// </summary>
-    private static long BoardHash(BoardState state)
-    {
-        long hash = unchecked((long)0xcbf29ce484222325);
-        for (int i = 0; i < 26; i++)
-        {
-            hash ^= state.Points[i];
-            hash = unchecked(hash * 0x100000001b3);
-        }
-        return hash;
-    }
-
-    /// <summary>
     /// Try to make a move from frPt with the given toPt. Returns null if illegal.
     /// Handles bear-off eligibility check.
     /// </summary>
@@ -593,18 +579,39 @@ public static class MoveGenerator
     }
 
     /// <summary>
-    /// The single source of the play → resulting-board rule behind
-    /// <see cref="GenerateResultingStates"/> and
-    /// <see cref="GenerateCandidatePlays"/>: a fresh copy of
-    /// <paramref name="state"/> with every move of <paramref name="play"/>
-    /// applied, in the mover's frame. <paramref name="state"/> is not touched.
+    /// The board behind <see cref="GenerateResultingStates"/> and
+    /// <see cref="GenerateCandidatePlays"/>: a new board holding the position
+    /// <paramref name="play"/> reaches (<see cref="ResultingPositionOf"/>), in
+    /// the mover's frame. <paramref name="state"/> is left unchanged.
     /// </summary>
     private static BoardState ResultingStateOf(BoardState state, in Play play)
+        => new(ResultingPositionOf(state, in play));
+
+    /// <summary>
+    /// The position a generated <paramref name="play"/> reaches from
+    /// <paramref name="state"/>, in the mover's frame — the single source of
+    /// the generator's play → position rule, behind every view of the
+    /// candidates, the reference's position dedup, and
+    /// <see cref="MoveEntryState"/>'s target positions. The moves are applied
+    /// one by one with the raw pair, the position is taken as a value, and the
+    /// moves are undone in reverse, so <paramref name="state"/> is left as it
+    /// was and nothing is allocated.
+    /// </summary>
+    /// <remarks>
+    /// For the generator's own encodings only: the raw pair trusts its moves
+    /// (<see cref="BoardState.ApplyMove"/> states the precondition), and a
+    /// generated play is a legal move sequence from <paramref name="state"/>,
+    /// so each move agrees with the board as it stands when it is applied. A
+    /// caller's play goes through <see cref="BoardState.ApplyPlay"/> instead.
+    /// </remarks>
+    internal static BoardPosition ResultingPositionOf(BoardState state, in Play play)
     {
-        var copy = state.Copy();
         for (int i = 0; i < play.Count; i++)
-            copy.ApplyMove(play[i]);
-        return copy;
+            state.ApplyMove(play[i]);
+        var position = state.ToPosition();
+        for (int i = play.Count - 1; i >= 0; i--)
+            state.UndoMove(play[i]);
+        return position;
     }
 
     /// <summary>
@@ -667,8 +674,10 @@ public static class MoveGenerator
 
     /// <summary>
     /// Brute-force move generation. Generates all possible plays by trying
-    /// every legal move sequence, then deduplicates by final board state.
-    /// Slow but guaranteed correct. Used as the ground truth for testing.
+    /// every legal move sequence, then keeps one per resulting position —
+    /// positions compared as <see cref="BoardPosition"/> values, whose
+    /// equality decides. Slow but guaranteed correct. Used as the ground
+    /// truth for testing.
     /// </summary>
     internal static List<Play> Reference_GeneratePlays(BoardState state, int die1, int die2)
     {
@@ -729,24 +738,17 @@ public static class MoveGenerator
                 best = withBig;
         }
 
-        // Board-state dedup
-        var seen = new HashSet<long>();
+        // One play per resulting position. best is non-empty here, so the
+        // first play is always kept.
+        var seen = new HashSet<BoardPosition>();
         var unique = new List<Play>();
         foreach (var play in best)
         {
-            state.ApplyMove(play[0]);
-            for (int i = 1; i < play.Count; i++)
-                state.ApplyMove(play[i]);
-
-            long hash = BoardHash(state);
-            if (seen.Add(hash))
+            if (seen.Add(ResultingPositionOf(state, in play)))
                 unique.Add(play);
-
-            for (int i = play.Count - 1; i >= 0; i--)
-                state.UndoMove(play[i]);
         }
 
-        return unique.Count > 0 ? unique : [new Play()];
+        return unique;
     }
 
     private static void Reference_Recurse(

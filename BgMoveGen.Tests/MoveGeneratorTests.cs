@@ -300,32 +300,17 @@ public class SingleMoveTests
 public class ReferenceCorrectnessTests
 {
     /// <summary>
-    /// Apply all moves in a play and return the board hash.
+    /// The positions <paramref name="plays"/> reach, as a set of
+    /// <see cref="BoardPosition"/> values — the same value the reference
+    /// deduplicates by, so the two sides compare in one definition of "the
+    /// same position".
     /// </summary>
-    private static long ApplyAndHash(BoardState state, Play play)
+    private static HashSet<BoardPosition> GetBoardStates(BoardState state, List<Play> plays)
     {
-        for (int i = 0; i < play.Count; i++)
-            state.ApplyMove(play[i]);
-
-        long hash = unchecked((long)0xcbf29ce484222325);
-        for (int i = 0; i < 26; i++)
-        {
-            hash ^= state.Points[i];
-            hash = unchecked(hash * 0x100000001b3);
-        }
-
-        for (int i = play.Count - 1; i >= 0; i--)
-            state.UndoMove(play[i]);
-
-        return hash;
-    }
-
-    private static HashSet<long> GetBoardStates(BoardState state, List<Play> plays)
-    {
-        var set = new HashSet<long>();
+        var set = new HashSet<BoardPosition>();
         foreach (var p in plays)
             if (p.Count > 0)
-                set.Add(ApplyAndHash(state, p));
+                set.Add(Replay.PositionAfter(state, p));
         return set;
     }
 
@@ -433,7 +418,7 @@ public class GenerateResultingStatesTests
                     for (int j = 0; j < plays[i].Count; j++)
                         expected.ApplyMove(plays[i][j]);
 
-                    Assert.True(PointsComparer.Instance.Equals(expected, states[i]),
+                    Assert.True(expected.ToPosition() == states[i].ToPosition(),
                         $"Position {index} {die1}-{die2}: board {i} is not candidate {i} applied.");
                     Assert.Equal(expected.HighPointOccupied, states[i].HighPointOccupied);
                 }
@@ -461,7 +446,7 @@ public class GenerateResultingStatesTests
         }
 
         var pointMade = Boards.OpeningAfterMakingTheFivePoint();
-        Assert.Contains(states, s => PointsComparer.Instance.Equals(s, pointMade));
+        Assert.Contains(states, s => s.ToPosition() == pointMade.ToPosition());
     }
 
     [Fact]
@@ -474,7 +459,7 @@ public class GenerateResultingStatesTests
         var only = Assert.Single(states);
         Assert.NotSame(state, only);
         Assert.False(state.Points.Overlaps(only.Points));
-        Assert.True(PointsComparer.Instance.Equals(state, only));
+        Assert.Equal(state.ToPosition(), only.ToPosition());
         Assert.Equal(state.HighPointOccupied, only.HighPointOccupied);
     }
 
@@ -489,7 +474,7 @@ public class GenerateResultingStatesTests
 
         MoveGenerator.GenerateResultingStates(state, die1, die2);
 
-        Assert.True(PointsComparer.Instance.Equals(original, state));
+        Assert.Equal(original.ToPosition(), state.ToPosition());
         Assert.Equal(original.HighPointOccupied, state.HighPointOccupied);
     }
 
@@ -517,26 +502,26 @@ public class GenerateResultingStatesTests
         // point change at once.
         states[0].SetPosition(BoardPosition.Empty);
 
-        Assert.True(PointsComparer.Instance.Equals(original, state));
+        Assert.Equal(original.ToPosition(), state.ToPosition());
         Assert.Equal(original.HighPointOccupied, state.HighPointOccupied);
         for (int i = 1; i < states.Count; i++)
-            Assert.True(PointsComparer.Instance.Equals(snapshot[i], states[i]));
+            Assert.Equal(snapshot[i].ToPosition(), states[i].ToPosition());
 
         var again = MoveGenerator.GenerateResultingStates(state, 6, 5);
         Assert.Equal(snapshot.Count, again.Count);
         for (int i = 0; i < again.Count; i++)
-            Assert.True(PointsComparer.Instance.Equals(snapshot[i], again[i]));
+            Assert.Equal(snapshot[i].ToPosition(), again[i].ToPosition());
     }
 
     [Fact]
     public void GenerateResultingStates_BoardsAreDistinct_AcrossSyntheticPositions()
     {
         // The reference sweep compares board *sets*, which a repeated board
-        // survives, so this compares the boards themselves, position for
-        // position and never by hash. It pins the property a consumer
-        // choosing among positions relies on: no position is returned — and
-        // so weighted — twice.
-        var distinct = new HashSet<BoardState>(PointsComparer.Instance);
+        // survives, so this compares the boards themselves, as BoardPosition
+        // values whose equality decides — a hash only buckets them. It pins
+        // the property a consumer choosing among positions relies on: no
+        // position is returned — and so weighted — twice.
+        var distinct = new HashSet<BoardPosition>();
         foreach ((int index, int[] mop) in SyntheticPositions.Corpus(4_000).Index())
         {
             foreach ((int die1, int die2) in SyntheticPositions.AllRolls())
@@ -545,7 +530,7 @@ public class GenerateResultingStatesTests
 
                 distinct.Clear();
                 foreach (var s in states)
-                    distinct.Add(s);
+                    distinct.Add(s.ToPosition());
 
                 Assert.True(distinct.Count == states.Count,
                     $"Position {index} {die1}-{die2}: {states.Count} resulting boards " +
@@ -583,10 +568,10 @@ public class GenerateCandidatePlaysTests
                     for (int j = 0; j < plays[i].Count; j++)
                         expected.ApplyMove(plays[i][j]);
 
-                    Assert.True(PointsComparer.Instance.Equals(expected, candidates[i].ResultingState),
+                    Assert.True(expected.ToPosition() == candidates[i].ResultingState.ToPosition(),
                         $"{where}: resulting state is not the play applied.");
                     Assert.Equal(expected.HighPointOccupied, candidates[i].ResultingState.HighPointOccupied);
-                    Assert.True(PointsComparer.Instance.Equals(boards[i], candidates[i].ResultingState),
+                    Assert.True(boards[i].ToPosition() == candidates[i].ResultingState.ToPosition(),
                         $"{where}: resulting state differs from GenerateResultingStates.");
                 }
             }
@@ -615,7 +600,7 @@ public class GenerateCandidatePlaysTests
 
         Play eightFiveSixFive = [new(8, 5), new(6, 5)];
         var makePoint = Assert.Single(candidates, c => state.IsSamePlay(c.Play, eightFiveSixFive));
-        Assert.True(PointsComparer.Instance.Equals(pointMade, makePoint.ResultingState));
+        Assert.Equal(pointMade.ToPosition(), makePoint.ResultingState.ToPosition());
     }
 
     [Fact]
@@ -629,7 +614,7 @@ public class GenerateCandidatePlaysTests
         Assert.Equal(0, only.Play.Count);
         Assert.NotSame(state, only.ResultingState);
         Assert.False(state.Points.Overlaps(only.ResultingState.Points));
-        Assert.True(PointsComparer.Instance.Equals(state, only.ResultingState));
+        Assert.Equal(state.ToPosition(), only.ResultingState.ToPosition());
         Assert.Equal(state.HighPointOccupied, only.ResultingState.HighPointOccupied);
     }
 
@@ -644,7 +629,7 @@ public class GenerateCandidatePlaysTests
 
         MoveGenerator.GenerateCandidatePlays(state, die1, die2);
 
-        Assert.True(PointsComparer.Instance.Equals(original, state));
+        Assert.Equal(original.ToPosition(), state.ToPosition());
         Assert.Equal(original.HighPointOccupied, state.HighPointOccupied);
     }
 
@@ -671,15 +656,15 @@ public class GenerateCandidatePlaysTests
         // point change at once.
         candidates[0].ResultingState.SetPosition(BoardPosition.Empty);
 
-        Assert.True(PointsComparer.Instance.Equals(original, state));
+        Assert.Equal(original.ToPosition(), state.ToPosition());
         Assert.Equal(original.HighPointOccupied, state.HighPointOccupied);
         for (int i = 1; i < candidates.Count; i++)
-            Assert.True(PointsComparer.Instance.Equals(snapshot[i], candidates[i].ResultingState));
+            Assert.Equal(snapshot[i].ToPosition(), candidates[i].ResultingState.ToPosition());
 
         var again = MoveGenerator.GenerateCandidatePlays(state, 6, 5);
         Assert.Equal(snapshot.Count, again.Count);
         for (int i = 0; i < again.Count; i++)
-            Assert.True(PointsComparer.Instance.Equals(snapshot[i], again[i].ResultingState));
+            Assert.Equal(snapshot[i].ToPosition(), again[i].ResultingState.ToPosition());
     }
 
     [Fact]
@@ -718,26 +703,6 @@ public class GenerateCandidatePlaysTests
                         $"Position {index} {die1}-{die2}: candidate {i} differs between calls.");
             }
         }
-    }
-}
-
-/// <summary>
-/// Position equality over the full 26-point array — never a hash alone, so
-/// two distinct boards sharing a hash cannot read as one.
-/// </summary>
-internal sealed class PointsComparer : IEqualityComparer<BoardState>
-{
-    public static readonly PointsComparer Instance = new();
-
-    public bool Equals(BoardState? x, BoardState? y) =>
-        ReferenceEquals(x, y) ||
-        (x is not null && y is not null && x.Points.SequenceEqual(y.Points));
-
-    public int GetHashCode(BoardState obj)
-    {
-        var hc = new HashCode();
-        foreach (int p in obj.Points) hc.Add(p);
-        return hc.ToHashCode();
     }
 }
 

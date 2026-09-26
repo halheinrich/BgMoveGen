@@ -74,8 +74,12 @@ public sealed class MoveEntryState
     /// <summary>The dice to be played this turn, length <see cref="_maxMoveCount"/>.</summary>
     private readonly List<int> _turnDice;
 
-    /// <summary>Final-board-state signature → the canonical generated play reaching it.</summary>
-    private readonly Dictionary<long, Play> _targetBySignature;
+    /// <summary>
+    /// Each position a generated play reaches → that play. Keyed by the
+    /// <see cref="BoardPosition"/> value, whose equality decides "the same
+    /// position" — a hash only buckets.
+    /// </summary>
+    private readonly Dictionary<BoardPosition, Play> _targetByPosition;
 
     private readonly BoardState _currentState;
     private readonly List<Move> _appliedMoves = new(4);
@@ -103,12 +107,12 @@ public sealed class MoveEntryState
         _allPlays = MoveGenerator.GeneratePlays(_currentState, die1, die2);
         _maxMoveCount = _allPlays[0].Count;
 
-        _targetBySignature = BuildTargetIndex();
+        _targetByPosition = BuildTargetIndex();
         _turnDice = BuildTurnDice();
         _remainingDice.AddRange(_turnDice);
 
         if (IsComplete)
-            _completedPlay = CanonicalCompletedPlay();
+            _completedPlay = GeneratedPlayReached();
 
         RecomputeLegalNextClicks();
     }
@@ -226,8 +230,8 @@ public sealed class MoveEntryState
     /// can bear off, or the play is already complete — returns
     /// <see cref="ClickOutcome.Illegal"/> with no state change.
     ///
-    /// Reuses the existing target machinery — <see cref="_targetBySignature"/> (the
-    /// generated final states) and the same depth-first reachability search as
+    /// Reuses the existing target machinery — <see cref="_targetByPosition"/> (the
+    /// generated positions) and the same depth-first reachability search as
     /// <see cref="CanReachTarget"/> — to enumerate completions and recover a
     /// committable path. Play generation and legality are not re-implemented; the
     /// generator remains the single source of truth. Each step is applied through
@@ -243,7 +247,7 @@ public sealed class MoveEntryState
         // _remainingDice are left untouched until we decide to commit.
         var work = _currentState.Copy();
         var remaining = new List<int>(_remainingDice);
-        var completions = new Dictionary<long, (int onBoard, List<(Move move, int die)> path)>();
+        var completions = new Dictionary<BoardPosition, (int onBoard, List<(Move move, int die)> path)>();
         CollectReachableCompletions(work, remaining, new List<(Move, int)>(), completions);
 
         if (completions.Count == 0) return ClickOutcome.Illegal; // no reachable completion
@@ -255,7 +259,7 @@ public sealed class MoveEntryState
         // Max bear-off = own checkers removed reaching the fewest-on-board final.
         if (OwnCheckersOnBoard(_currentState) - minOnBoard < 1) return ClickOutcome.Illegal;
 
-        long winner = 0;
+        BoardPosition winner = default;
         bool haveWinner = false;
         foreach (var kv in completions)
         {
@@ -286,8 +290,8 @@ public sealed class MoveEntryState
     /// while keeping the turn completable. A checker may travel several die-steps to reach
     /// the point (a combined path whose intermediate sub-moves need not land on it); the
     /// first arrival onto an opponent blot is generated as a hit. Among the minimal-depth
-    /// solutions the distinct resulting board states are counted (deduped by
-    /// <see cref="Signature"/>): exactly one distinct state ⇒ its path is committed
+    /// solutions the distinct resulting positions are counted (compared as
+    /// <see cref="BoardPosition"/> values): exactly one distinct state ⇒ its path is committed
     /// (<see cref="ClickOutcome.PlayCompleted"/> if it finishes the play — e.g. a
     /// non-doubles make consuming both dice — otherwise <see cref="ClickOutcome.MoveCommitted"/>,
     /// with the unused dice left for further <see cref="TryAdvanceFrom"/> clicks); two or
@@ -315,7 +319,7 @@ public sealed class MoveEntryState
     /// Legality and reachability are not re-implemented: candidate single moves come from
     /// <see cref="MoveGenerator.SingleMoves(BoardState, int, System.Span{Move})"/>, "the turn can still complete" is the shared
     /// <see cref="CanReachTarget"/>, and every commit goes through <see cref="CommitMove"/>
-    /// so canonicalization, undo, and the legal-click recompute stay single-sourced. Make
+    /// so completion, undo, and the legal-click recompute stay single-sourced. Make
     /// and land-one are one routine — <see cref="CollectMinimalLandingPaths"/> at target
     /// count two then one. The <see cref="Move.ToPt"/> hit encoding stays hidden — the
     /// click is a positive point.
@@ -344,13 +348,13 @@ public sealed class MoveEntryState
     /// Run <see cref="CollectMinimalLandingPaths"/> for <paramref name="targetCount"/> own
     /// checkers on <paramref name="point"/> against scratch copies of the current state and
     /// remaining dice (the live state is untouched until a caller commits). Returns the
-    /// distinct minimal-depth landing paths, keyed by resulting-state signature.
+    /// distinct minimal-depth landing paths, keyed by resulting position.
     /// </summary>
-    private Dictionary<long, List<(Move move, int die)>> CollectMinimalLandings(int point, int targetCount)
+    private Dictionary<BoardPosition, List<(Move move, int die)>> CollectMinimalLandings(int point, int targetCount)
     {
         var work = _currentState.Copy();
         var remaining = new List<int>(_remainingDice);
-        var into = new Dictionary<long, List<(Move move, int die)>>();
+        var into = new Dictionary<BoardPosition, List<(Move move, int die)>>();
         int minDepth = int.MaxValue;
         CollectMinimalLandingPaths(work, remaining, point, targetCount, new List<(Move, int)>(), into, ref minDepth);
         return into;
@@ -358,7 +362,7 @@ public sealed class MoveEntryState
 
     /// <summary>The single path when exactly one distinct landing was found, else null.</summary>
     private static List<(Move move, int die)>? UniquePathOrNull(
-        Dictionary<long, List<(Move move, int die)>> paths)
+        Dictionary<BoardPosition, List<(Move move, int die)>> paths)
     {
         if (paths.Count != 1) return null;
         foreach (var p in paths.Values) return p;
@@ -386,7 +390,7 @@ public sealed class MoveEntryState
     /// sub-moves need not land on it), and the arrival onto an opponent blot is generated
     /// as a hit. On finding a landing at depth <c>path.Count</c>: a shorter depth supersedes
     /// (clears prior, lowering <paramref name="minDepth"/>); an equal depth is kept, deduped
-    /// by resulting-state <see cref="Signature"/> into <paramref name="into"/> — so its
+    /// by resulting position into <paramref name="into"/> — so its
     /// final count is the number of genuinely distinct minimal landings. Mutates
     /// <paramref name="state"/> / <paramref name="remaining"/> / <paramref name="path"/>
     /// transiently but restores all three before returning.
@@ -394,7 +398,7 @@ public sealed class MoveEntryState
     private void CollectMinimalLandingPaths(
         BoardState state, List<int> remaining, int point, int targetCount,
         List<(Move move, int die)> path,
-        Dictionary<long, List<(Move move, int die)>> into,
+        Dictionary<BoardPosition, List<(Move move, int die)>> into,
         ref int minDepth)
     {
         // No deeper search can beat or tie a landing already found at this depth.
@@ -423,16 +427,16 @@ public sealed class MoveEntryState
                     if (CanReachTarget(state, remaining))
                     {
                         int depth = path.Count;
-                        long sig = Signature(state);
+                        var position = state.ToPosition();
                         if (depth < minDepth)
                         {
                             minDepth = depth;
                             into.Clear();
-                            into[sig] = new List<(Move, int)>(path);
+                            into[position] = new List<(Move, int)>(path);
                         }
-                        else if (depth == minDepth && !into.ContainsKey(sig))
+                        else if (depth == minDepth && !into.ContainsKey(position))
                         {
-                            into[sig] = new List<(Move, int)>(path);
+                            into[position] = new List<(Move, int)>(path);
                         }
                     }
                 }
@@ -451,21 +455,21 @@ public sealed class MoveEntryState
     /// <summary>
     /// Depth-first walk of every ordering of <paramref name="remaining"/> dice played
     /// as legal single moves from <paramref name="state"/>. Each ordering that consumes
-    /// all dice and lands on a generated final state records — keyed by that state's
-    /// signature, first path wins — the own checkers left on board and a committable
+    /// all dice and lands on a generated position records — keyed by that
+    /// <see cref="BoardPosition"/>, first path wins — the own checkers left on board and a committable
     /// (move, die) path. Mutates <paramref name="state"/> / <paramref name="remaining"/>
     /// / <paramref name="path"/> transiently but restores all three before returning.
     /// </summary>
     private void CollectReachableCompletions(
         BoardState state, List<int> remaining,
         List<(Move move, int die)> path,
-        Dictionary<long, (int onBoard, List<(Move move, int die)> path)> into)
+        Dictionary<BoardPosition, (int onBoard, List<(Move move, int die)> path)> into)
     {
         if (remaining.Count == 0)
         {
-            long sig = Signature(state);
-            if (_targetBySignature.ContainsKey(sig) && !into.ContainsKey(sig))
-                into[sig] = (OwnCheckersOnBoard(state), new List<(Move, int)>(path));
+            var position = state.ToPosition();
+            if (_targetByPosition.ContainsKey(position) && !into.ContainsKey(position))
+                into[position] = (OwnCheckersOnBoard(state), new List<(Move, int)>(path));
             return;
         }
 
@@ -531,7 +535,7 @@ public sealed class MoveEntryState
         _appliedDice.Clear();
         _remainingDice.Clear();
         _remainingDice.AddRange(_turnDice);
-        _completedPlay = IsComplete ? CanonicalCompletedPlay() : null;
+        _completedPlay = IsComplete ? GeneratedPlayReached() : null;
         RecomputeLegalNextClicks();
     }
 
@@ -543,7 +547,7 @@ public sealed class MoveEntryState
         _appliedMoves.Add(m);
         _appliedDice.Add(die);
         _remainingDice.Remove(die);
-        if (IsComplete) _completedPlay = CanonicalCompletedPlay();
+        if (IsComplete) _completedPlay = GeneratedPlayReached();
         RecomputeLegalNextClicks();
     }
 
@@ -618,7 +622,7 @@ public sealed class MoveEntryState
     private bool CanReachTarget(BoardState state, List<int> remaining)
     {
         if (remaining.Count == 0)
-            return _targetBySignature.ContainsKey(Signature(state));
+            return _targetByPosition.ContainsKey(state.ToPosition());
 
         var tried = new HashSet<int>();
         Span<Move> buffer = stackalloc Move[30];
@@ -645,18 +649,19 @@ public sealed class MoveEntryState
     }
 
     /// <summary>
-    /// Index each generated play by the signature of the board state it produces.
-    /// The generator dedups by final state, so signatures are distinct.
+    /// Index each generated play by the position it reaches, through the
+    /// generator's one play → position rule
+    /// (<see cref="MoveGenerator.ResultingPositionOf"/>).
+    /// <see cref="MoveGenerator.GeneratePlays"/> emits one play per resulting
+    /// position, so no position is indexed twice — and <c>Add</c> throws if the
+    /// generator ever broke that, rather than letting a second play silently
+    /// replace the first.
     /// </summary>
-    private Dictionary<long, Play> BuildTargetIndex()
+    private Dictionary<BoardPosition, Play> BuildTargetIndex()
     {
-        var map = new Dictionary<long, Play>(_allPlays.Count);
+        var map = new Dictionary<BoardPosition, Play>(_allPlays.Count);
         foreach (var p in _allPlays)
-        {
-            for (int i = 0; i < p.Count; i++) _currentState.ApplyMove(p[i]);
-            map[Signature(_currentState)] = p;
-            for (int i = p.Count - 1; i >= 0; i--) _currentState.UndoMove(p[i]);
-        }
+            map.Add(MoveGenerator.ResultingPositionOf(_currentState, in p), p);
         return map;
     }
 
@@ -701,7 +706,7 @@ public sealed class MoveEntryState
         for (int i = 0; i < count; i++)
         {
             _currentState.ApplyMove(buffer[i]);
-            bool hit = _targetBySignature.ContainsKey(Signature(_currentState));
+            bool hit = _targetByPosition.ContainsKey(_currentState.ToPosition());
             _currentState.UndoMove(buffer[i]);
             if (hit) return true;
         }
@@ -709,13 +714,14 @@ public sealed class MoveEntryState
     }
 
     /// <summary>
-    /// The canonical generated play matching the current (completed) board state.
-    /// Falls back to a literal snapshot of the applied moves if no match is found —
-    /// that should not happen and indicates a generation/entry contract mismatch.
+    /// The generated play reaching the current (completed) position, in the
+    /// generator's encoding. Falls back to a literal snapshot of the applied moves
+    /// if no match is found — that should not happen and indicates a
+    /// generation/entry contract mismatch.
     /// </summary>
-    private Play CanonicalCompletedPlay()
+    private Play GeneratedPlayReached()
     {
-        if (_targetBySignature.TryGetValue(Signature(_currentState), out var play))
+        if (_targetByPosition.TryGetValue(_currentState.ToPosition(), out var play))
             return play;
         return SnapshotAppliedAsPlay();
     }
@@ -725,18 +731,5 @@ public sealed class MoveEntryState
         var p = new Play();
         foreach (var m in _appliedMoves) p.Add(m);
         return p;
-    }
-
-    /// <summary>FNV-1a signature over the 26 board points — matches the generator's
-    /// board-state dedup hash, so equal positions get equal signatures.</summary>
-    private static long Signature(BoardState s)
-    {
-        long hash = unchecked((long)0xcbf29ce484222325);
-        for (int i = 0; i < 26; i++)
-        {
-            hash ^= s.Points[i];
-            hash = unchecked(hash * 0x100000001b3);
-        }
-        return hash;
     }
 }
