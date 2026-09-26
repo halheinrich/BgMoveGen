@@ -580,13 +580,27 @@ has no formatter of its own.
 Stateful one-click `Play` assembly. Anchored on
 `MoveGenerator.GeneratePlays` as the legality reference, but
 **by reachable board state, not by literal move-lists** — see
-Architecture and Pitfalls below. Public surface:
-`TryAdvanceFrom(int, IReadOnlyList<int>)` (advance the clicked point by
-one legal move, the caller's `diePreference` resolving which die) and
-`TryBearOffMax()` (tray click — bear off the most checkers when a unique
-completion achieves it), both → `ClickOutcome`, plus `LegalNextClicks`,
-`CompletedPlay`, `CurrentPosition`, `IsComplete`, `AppliedMoves`, `UndoLast()`,
-`UndoAll()`. Consumed by BgDiag_Razor's `BackgammonPlayEntry`.
+Architecture and Pitfalls below. Consumed by BgDiag_Razor's
+`BackgammonPlayEntry`. Public surface, complete:
+
+- `MoveEntryState(BoardState initialState, int die1, int die2)` — captures
+  the start as a position value; refuses a null state and a die outside
+  1–6 (through `GeneratePlays`).
+- Clicks, each → `ClickOutcome` (`Illegal`, `MoveCommitted`,
+  `PlayCompleted`), with no state change on `Illegal`:
+  `TryAdvanceFrom(int point, IReadOnlyList<int> diePreference)` (advance
+  the clicked source point by one legal move, `diePreference` resolving
+  which die), `TryMakePoint(int point)` (click a destination: make it with
+  two checkers in the fewest sub-moves, else land one there, hitting a blot
+  automatically; own-occupied points are sources and are refused), and
+  `TryBearOffMax()` (tray click — bear off the most checkers when a unique
+  completion achieves it).
+- Undo: `UndoLast()`, `UndoAll()`.
+- State: `Die1`, `Die2` (the dice as passed), `CurrentPosition` (the
+  intermediate position, a `BoardPosition`), `LegalNextClicks` (the source
+  points with a legal advance now), `AppliedMoves` (the committed moves, in
+  click order), `IsComplete`, and `CompletedPlay` (the generated play
+  reached, or null while in progress).
 
 `CurrentPosition` is the intermediate position as a `BoardPosition` value —
 readable, never writable. The board the entry state assembles the play on
