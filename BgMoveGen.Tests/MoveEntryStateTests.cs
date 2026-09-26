@@ -164,6 +164,23 @@ public class MoveEntryStateTests
     }
 
     [Fact]
+    public void ACompletedEntryOnNoGeneratedPosition_Throws_NamingThePosition()
+    {
+        // The acceptance rule keeps a generated position reachable, so no
+        // click sequence gets here; the lookup behind CompletedPlay is asked
+        // directly. Finding no generated play is a defect, not a fallback to
+        // the literal clicks.
+        var targets = new Dictionary<BoardPosition, Play> { [BoardPosition.Standard] = [] };
+        var nowhere = BoardPosition.Nackgammon;
+
+        var thrown = Assert.Throws<System.Diagnostics.UnreachableException>(
+            () => MoveEntryState.GeneratedPlayReaching(targets, nowhere));
+
+        Assert.Contains(nowhere.ToString(), thrown.Message);
+        Assert.Equal(0, MoveEntryState.GeneratedPlayReaching(targets, BoardPosition.Standard).Count);
+    }
+
+    [Fact]
     public void Construction_CapturesInitialByCopy()
     {
         var initial = BoardState.Standard();

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using BgDataTypes_Lib;
 
 namespace BgMoveGen;
@@ -724,21 +725,33 @@ public sealed class MoveEntryState
 
     /// <summary>
     /// The generated play reaching the current (completed) position, in the
-    /// generator's encoding. Falls back to a literal snapshot of the applied moves
-    /// if no match is found — that should not happen and indicates a
-    /// generation/entry contract mismatch.
+    /// generator's encoding — see <see cref="GeneratedPlayReaching"/>.
     /// </summary>
-    private Play GeneratedPlayReached()
-    {
-        if (_targetByPosition.TryGetValue(_currentState.ToPosition(), out var play))
-            return play;
-        return SnapshotAppliedAsPlay();
-    }
+    private Play GeneratedPlayReached() =>
+        GeneratedPlayReaching(_targetByPosition, _currentState.ToPosition());
 
-    private Play SnapshotAppliedAsPlay()
+    /// <summary>
+    /// The play in <paramref name="targets"/> that reaches
+    /// <paramref name="position"/>. A completed entry always stands on a
+    /// generated position: a click is accepted only while one stays reachable
+    /// (<see cref="CanReachTarget"/>), and an entry complete without a click
+    /// stands on the pass's position, which is indexed. So finding none is a
+    /// broken invariant of this type, never a caller's error, and it throws —
+    /// there is no fallback to the literal clicks, which would hand back a
+    /// play the generator never produced.
+    /// </summary>
+    /// <exception cref="UnreachableException">
+    /// No play in <paramref name="targets"/> reaches <paramref name="position"/>;
+    /// the message names the position.
+    /// </exception>
+    internal static Play GeneratedPlayReaching(
+        IReadOnlyDictionary<BoardPosition, Play> targets, BoardPosition position)
     {
-        var p = new Play();
-        foreach (var m in _appliedMoves) p.Add(m);
-        return p;
+        if (targets.TryGetValue(position, out var play))
+            return play;
+        throw new UnreachableException(
+            $"The completed entry stands on {position}, which no generated play reaches. " +
+            "MoveEntryState accepts a click only while a generated position stays reachable, " +
+            "so this is a defect in it.");
     }
 }

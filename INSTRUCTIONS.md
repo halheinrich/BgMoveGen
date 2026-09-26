@@ -218,7 +218,10 @@ literal clicked moves. Two intermediate paths to the same position therefore
 yield the identical encoding (`Play.IsSameEncoding`), so a consumer matching
 it among the candidates finds it whatever the path; paths that reach
 genuinely different positions (one hits an intermediate blot, the other
-doesn't) yield different plays.
+doesn't) yield different plays. The acceptance rule makes the lookup total,
+so a completed entry that matches no generated play is a defect in this
+type: it throws `UnreachableException` naming the position, and there is no
+fallback to the literal clicks.
 
 Dice bookkeeping: `_turnDice` (length = play length) is the multiset played
 this turn; `_remainingDice` tracks what's unconsumed, and each committed move
