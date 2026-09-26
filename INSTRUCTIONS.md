@@ -293,7 +293,9 @@ pip-floor retry loop). BgMoveGen exposes it through the
 
 - `Reference_GeneratePlays` — brute-force recursive enumeration of both die
   orderings, one play kept per resulting position (`BoardPosition`). Guaranteed
-  correct. Ground truth.
+  correct. Ground truth. It is two stages: `Reference_LegalSequences`, every
+  legal play as a sequence of single-die moves with nothing deduplicated,
+  then one per position.
 - `ReferenceCorrectnessTests.Optimized_MatchesReference` — parameterized
   harness comparing optimized `GeneratePlays` to `Reference_GeneratePlays`
   by board-state set equality. Extended by adding `[InlineData]` rows; the
@@ -313,6 +315,20 @@ pip-floor retry loop). BgMoveGen exposes it through the
   compares the boards `GenerateResultingStates` returns: the reference sweep
   compares board *sets*, which a repeated board survives, so board
   distinctness is compared position for position, never by hash.
+- `GeneratePlays_HoldsExactlyOnePlayPerLegalPosition_AcrossSyntheticPositions`
+  — the pin on the generator's promise of one play per resulting position
+  (halheinrich/backgammon#279, restated for position identity). On the
+  corpus's first 1,000 positions and all 21 rolls it walks every legal
+  single-die sequence (`Reference_LegalSequences`): no two listed plays reach
+  one position, every sequence reaches a listed play's position and is the
+  same play as it under `BoardState.IsSamePlay`, and every listed play's
+  position is one a legal sequence reaches. Positions compare as
+  `BoardPosition` values. The middle clause is what ties the producer's
+  identity rule to where the moves physically lead, for every way of
+  writing a legal play; it asks `IsSamePlay` of the one listed play, since
+  asking the list match per sequence costs one rule evaluation per
+  candidate — minutes in a Debug run — and adds nothing the distinct-plays
+  sweep does not already pin.
 - Test categories: apply/undo round-trip; single-move generation (bar
   entry, regular, bear-off exact and overshoot, ordering); reference
   correctness; `GenerateResultingStates` contract (final boards of the
@@ -470,10 +486,12 @@ the association. Choosing among candidates, and breaking ties, is the
 consumer's decision.
 
 The candidates `GeneratePlays` returns are distinct by resulting position:
-no two are the same play from the input (`BoardState.IsSamePlay`), so a
-consumer may treat `Count == 1` as "no choice"; pinned by
-`GeneratePlays_CandidatesAreDistinctPlays` and
-`GeneratePlays_CandidatesAreDistinctPlays_AcrossSyntheticPositions`.
+exactly one play per position a legal play reaches, so no two are the same
+play from the input (`BoardState.IsSamePlay`) and a consumer may treat
+`Count == 1` as "no choice"; pinned by
+`GeneratePlays_HoldsExactlyOnePlayPerLegalPosition_AcrossSyntheticPositions`,
+with `GeneratePlays_CandidatesAreDistinctPlays` and its synthetic-corpus
+sweep beside it.
 
 `IsLegalPlay` matches with BgDataTypes_Lib's list match,
 `BoardState.IndexOfSamePlay`, so identity is `BoardState.IsSamePlay`'s.

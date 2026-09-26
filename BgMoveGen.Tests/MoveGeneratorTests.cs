@@ -386,6 +386,73 @@ public class ReferenceCorrectnessTests
         }
     }
 
+    [Fact]
+    public void GeneratePlays_HoldsExactlyOnePlayPerLegalPosition_AcrossSyntheticPositions()
+    {
+        // halheinrich/backgammon#279, stated for position identity: the legal
+        // list holds exactly one play per distinct position a legal play
+        // reaches. Checked against the whole space of legal single-die
+        // sequences (the reference's, before it keeps one per position), all
+        // 21 rolls on a bounded, seeded sample, positions compared as
+        // BoardPosition values:
+        //   - no two listed plays reach one position;
+        //   - every legal sequence reaches a position a listed play reaches,
+        //     and is the same play as that listed play under
+        //     BoardState.IsSamePlay — so the rule behind identity agrees with
+        //     where the moves physically lead, for every way of writing a
+        //     legal play. With the listed plays distinct as plays
+        //     (GeneratePlays_CandidatesAreDistinctPlays_AcrossSyntheticPositions),
+        //     that is the list match (IndexOfSamePlay) finding exactly that
+        //     play, asked here per sequence at one rule evaluation instead of
+        //     one per candidate;
+        //   - every listed play reaches a position some legal sequence
+        //     reaches: the list holds nothing a legal play cannot reach.
+        foreach ((int index, int[] mop) in SyntheticPositions.Corpus(PropertySample).Index())
+        {
+            foreach ((int die1, int die2) in SyntheticPositions.AllRolls())
+            {
+                var state = BoardState.FromMop(mop);
+                var plays = MoveGenerator.GeneratePlays(state, die1, die2);
+                string where = $"Position {index} ({state.ToPosition()}) {die1}-{die2}";
+
+                var listedAt = new Dictionary<BoardPosition, int>();
+                for (int i = 0; i < plays.Count; i++)
+                {
+                    var reached = Replay.PositionAfter(state, plays[i]);
+                    if (!listedAt.TryAdd(reached, i))
+                        Assert.Fail($"{where}: plays {listedAt[reached]} and {i} reach one position, {reached}.");
+                }
+
+                var legalPositions = new HashSet<BoardPosition>();
+                foreach (var sequence in MoveGenerator.Reference_LegalSequences(state, die1, die2))
+                {
+                    var reached = Replay.PositionAfter(state, sequence);
+                    legalPositions.Add(reached);
+
+                    if (!listedAt.TryGetValue(reached, out int listed))
+                        Assert.Fail($"{where}: the legal sequence {PlayText.Raw(sequence)} reaches {reached}, which no listed play reaches.");
+
+                    if (!state.IsSamePlay(sequence, plays[listed]))
+                        Assert.Fail($"{where}: the legal sequence {PlayText.Raw(sequence)} reaches play {listed}'s position, " +
+                                    $"but is not the same play as {PlayText.Raw(plays[listed])}.");
+                }
+
+                foreach (var (position, i) in listedAt)
+                {
+                    if (!legalPositions.Contains(position))
+                        Assert.Fail($"{where}: play {i} reaches {position}, which no legal sequence reaches.");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The property sweep's sample: the first positions of the shared seeded
+    /// corpus. Bounded because it walks every legal sequence, not one per
+    /// position, and a spread position's doubles run to thousands.
+    /// </summary>
+    private const int PropertySample = 1_000;
+
     private static BoardState CreatePosition(string name) => name switch
     {
         "standard" => BoardState.Standard(),
@@ -978,7 +1045,7 @@ public class IsLegalPlayTests
         for (int i = 0; i < plays.Count; i++)
             for (int j = i + 1; j < plays.Count; j++)
                 Assert.False(state.IsSamePlay(plays[i], plays[j]),
-                    $"Candidates {i} {Raw(plays[i])} and {j} {Raw(plays[j])} " +
+                    $"Candidates {i} {PlayText.Raw(plays[i])} and {j} {PlayText.Raw(plays[j])} " +
                     $"are the same play for {die1}-{die2}.");
     }
 
@@ -1029,18 +1096,10 @@ public class IsLegalPlayTests
                     if (first != i)
                         Assert.Fail(
                             $"Position {index} ({state.ToPosition()}) {die1}-{die2}: candidates " +
-                            $"{first} {Raw(plays[first])} and {i} {Raw(plays[i])} are the same play.");
+                            $"{first} {PlayText.Raw(plays[first])} and {i} {PlayText.Raw(plays[i])} are the same play.");
                 }
             }
         }
-    }
-
-    private static string Raw(Play p)
-    {
-        var parts = new List<string>(p.Count);
-        for (int i = 0; i < p.Count; i++)
-            parts.Add($"({p[i].FrPt},{p[i].ToPt})");
-        return "{" + string.Join(" ", parts) + "}";
     }
 
     [Fact]

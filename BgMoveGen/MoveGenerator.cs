@@ -469,15 +469,19 @@ public static class MoveGenerator
     /// </para>
     ///
     /// <para>
-    /// <b>Distinct by resulting position.</b> No two candidates reach the same
-    /// position, so no two are the same play from <paramref name="state"/> —
-    /// play identity is <see cref="BoardState.IsSamePlay"/>'s, whose remarks
-    /// state it. A consumer may therefore treat <c>Count == 1</c> as "no
-    /// choice": the one candidate, pass or not, is the only play. Pinned by
-    /// <c>GeneratePlays_CandidatesAreDistinctPlays</c> (all 21 rolls on the
-    /// opening board) and
-    /// <c>GeneratePlays_CandidatesAreDistinctPlays_AcrossSyntheticPositions</c>
-    /// (84,000 position–roll pairs) in <c>MoveGeneratorTests</c>.
+    /// <b>Distinct by resulting position.</b> The list holds exactly one play
+    /// per distinct position a legal play reaches: no two candidates reach the
+    /// same position, so no two are the same play from
+    /// <paramref name="state"/> — play identity is
+    /// <see cref="BoardState.IsSamePlay"/>'s, whose remarks state it — and
+    /// every legal way of playing the roll reaches one candidate's position. A
+    /// consumer may therefore treat <c>Count == 1</c> as "no choice": the one
+    /// candidate, pass or not, is the only play. Pinned against every legal
+    /// single-die sequence by
+    /// <c>GeneratePlays_HoldsExactlyOnePlayPerLegalPosition_AcrossSyntheticPositions</c>,
+    /// with <c>GeneratePlays_CandidatesAreDistinctPlays</c> (all 21 rolls on
+    /// the opening board) and its <c>_AcrossSyntheticPositions</c> sweep
+    /// (84,000 position–roll pairs) beside it, in <c>MoveGeneratorTests</c>.
     /// </para>
     /// </summary>
     public static List<Play> GeneratePlays(BoardState state, int die1, int die2)
@@ -673,13 +677,39 @@ public static class MoveGenerator
     // ── Reference implementation (brute-force, obviously correct) ──
 
     /// <summary>
-    /// Brute-force move generation. Generates all possible plays by trying
-    /// every legal move sequence, then keeps one per resulting position —
-    /// positions compared as <see cref="BoardPosition"/> values, whose
-    /// equality decides. Slow but guaranteed correct. Used as the ground
-    /// truth for testing.
+    /// Brute-force move generation. Takes every legal single-die sequence
+    /// (<see cref="Reference_LegalSequences"/>) and keeps one per resulting
+    /// position — positions compared as <see cref="BoardPosition"/> values,
+    /// whose equality decides. Slow but guaranteed correct. Used as the
+    /// ground truth for testing.
     /// </summary>
     internal static List<Play> Reference_GeneratePlays(BoardState state, int die1, int die2)
+    {
+        // Never empty: a position with no legal move yields the one pass, so
+        // the first sequence is always kept.
+        var seen = new HashSet<BoardPosition>();
+        var unique = new List<Play>();
+        foreach (var play in Reference_LegalSequences(state, die1, die2))
+        {
+            if (seen.Add(ResultingPositionOf(state, in play)))
+                unique.Add(play);
+        }
+
+        return unique;
+    }
+
+    /// <summary>
+    /// Every legal play of the roll as a sequence of single-die moves, one
+    /// entry per sequence — brute force, with no deduplication: both die
+    /// orders of a non-double, every order of a double's moves the recursion
+    /// reaches, each move a legal single move (<see cref="SingleMoves(BoardState, int, Span{Move})"/>)
+    /// from the board the moves before it leave. The rules on the whole play
+    /// are applied after: as many dice as can be played, and a lone
+    /// non-double die the larger when either could be. The one pass when
+    /// there is no legal move. The space
+    /// <see cref="Reference_GeneratePlays"/> reduces to one play per position.
+    /// </summary>
+    internal static List<Play> Reference_LegalSequences(BoardState state, int die1, int die2)
     {
         var allPlays = new List<Play>();
         var current = new Play();
@@ -738,17 +768,7 @@ public static class MoveGenerator
                 best = withBig;
         }
 
-        // One play per resulting position. best is non-empty here, so the
-        // first play is always kept.
-        var seen = new HashSet<BoardPosition>();
-        var unique = new List<Play>();
-        foreach (var play in best)
-        {
-            if (seen.Add(ResultingPositionOf(state, in play)))
-                unique.Add(play);
-        }
-
-        return unique;
+        return best;
     }
 
     private static void Reference_Recurse(
