@@ -103,6 +103,73 @@ public unsafe class InteropTests
         Assert.All(buffer, b => Assert.Equal(Sentinel, b.OffPlayer));
     }
 
+    [Theory]
+    [InlineData(0, 3)]
+    [InlineData(7, 3)]
+    [InlineData(3, 0)]
+    [InlineData(3, 7)]
+    [InlineData(-1, int.MaxValue)]
+    public void DieOutsideOneToSix_ReturnsInvalidArgument_AndNothingIsWritten(int die1, int die2)
+    {
+        // GeneratePlays refuses the die with an ArgumentOutOfRangeException;
+        // the export turns the refusal into a status rather than let it cross
+        // the native boundary, which would terminate BgRLEngine's process.
+        var (status, buffer) = RunInteropRaw(MakeExternal(BoardState.Standard()), die1, die2);
+
+        Assert.Equal((int)Interop.Status.InvalidArgument, status);
+        Assert.All(buffer, b => Assert.Equal(Sentinel, b.OffPlayer));
+    }
+
+    [Fact]
+    public void NullPointersAndANegativeCapacity_ReturnInvalidArgument()
+    {
+        var input = new[] { MakeExternal(BoardState.Standard()) };
+        var buffer = new BgBoardState[MaxSuccessors];
+        fixed (BgBoardState* pIn = input)
+        fixed (BgBoardState* pOut = buffer)
+        {
+            Assert.Equal((int)Interop.Status.InvalidArgument,
+                Interop.GenerateSuccessorStatesCore(null, 3, 1, pOut, MaxSuccessors));
+            Assert.Equal((int)Interop.Status.InvalidArgument,
+                Interop.GenerateSuccessorStatesCore(pIn, 3, 1, null, MaxSuccessors));
+            Assert.Equal((int)Interop.Status.InvalidArgument,
+                Interop.GenerateSuccessorStatesCore(pIn, 3, 1, pOut, -1));
+            Assert.Equal((int)Interop.Status.InvalidArgument,
+                Interop.GetStartingPositionCore(0, -1, null));
+        }
+    }
+
+    [Fact]
+    public void TheExportedEntryPoints_ReturnStatuses_NeverAnException()
+    {
+        // Through the [UnmanagedCallersOnly] methods themselves, called as
+        // native code calls them — by unmanaged function pointer. An
+        // exception escaping one terminates the process, so this test run
+        // finishing at all is half the pin; the statuses are the other half.
+        delegate* unmanaged<BgBoardState*, int, int, BgBoardState*, int, int> generate = &Interop.GenerateSuccessorStates;
+        delegate* unmanaged<int, int, BgBoardState*, int> start = &Interop.GetStartingPosition;
+
+        var input = new[] { MakeExternal(BoardState.Standard()) };
+        var malformed = new[] { MakeExternal(BoardState.Standard()) };
+        malformed[0].BarPlayer = 1;   // a sixteenth on-roll checker
+        var buffer = new BgBoardState[MaxSuccessors];
+        fixed (BgBoardState* pIn = input)
+        fixed (BgBoardState* pBad = malformed)
+        fixed (BgBoardState* pOut = buffer)
+        {
+            Assert.Equal(MoveGenerator.GeneratePlays(BoardState.Standard(), 3, 1).Count,
+                generate(pIn, 3, 1, pOut, MaxSuccessors));
+            Assert.Equal((int)Interop.Status.InvalidArgument, generate(pIn, 0, 1, pOut, MaxSuccessors));
+            Assert.Equal((int)Interop.Status.InvalidArgument, generate(pIn, 3, 7, pOut, MaxSuccessors));
+            Assert.Equal((int)Interop.Status.InvalidArgument, generate(null, 3, 1, pOut, MaxSuccessors));
+            Assert.Equal((int)Interop.Status.InvalidPosition, generate(pBad, 3, 1, pOut, MaxSuccessors));
+
+            Assert.Equal(0, start(0, -1, pOut));
+            Assert.Equal((int)Interop.Status.InvalidArgument, start(99, -1, pOut));
+            Assert.Equal((int)Interop.Status.InvalidArgument, start(0, -1, null));
+        }
+    }
+
     [Fact]
     public void SuccessiveCalls_ResetTheReusedBoard_EachMatchingAFreshBoard()
     {

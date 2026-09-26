@@ -357,10 +357,17 @@ pip-floor retry loop). BgMoveGen exposes it through the
   reached from each, rejection of a decomposition through a blocked point,
   candidates distinct as plays on the opening board, on the two-die
   bear-off, and across the synthetic corpus); performance benchmarks;
-  interop (successor count, flip correctness, off-count tracking, checker
-  conservation, pass detection, the reused board's reset across successive
-  calls, refusal of a malformed input board, Bg960 conservation and seed
-  reproducibility); MoveEntryState click-by-click assembly.
+  `GenerateSuccessors` contract (play `i` by encoding, the board
+  `ApplyPlay` leaves, distinct positions, the pass flipped, input
+  untouched, no allocation per successor, no equality); argument refusal on
+  every public entry (a null state, each die outside 1–6, the board
+  untouched); interop (successor count, flip correctness, off-count
+  tracking, checker conservation, pass detection, the reused board's reset
+  across successive calls and agreement with `GenerateSuccessors`, the
+  statuses for a malformed board, a bad die, null pointers and a negative
+  capacity, and the exported entry points returning statuses rather than
+  throwing, Bg960 conservation and seed reproducibility); MoveEntryState
+  click-by-click assembly.
 
 ### Benchmarks
 
@@ -480,6 +487,17 @@ MoveGenerator.ApplyPlay(state, play, die1, die2);   // throws on illegal play
 pass is represented as a single successor identical to the input board
 (flipped by the interop layer).
 
+**Arguments are refused once, in `GeneratePlays`** (halheinrich/backgammon#244):
+a null state throws `ArgumentNullException`, and a die outside 1–6
+`ArgumentOutOfRangeException` naming the die — the dice are taken as a
+BgDataTypes_Lib `DiceRoll`, whose constructor owns the die-face rule, and
+the generator reads the roll's canonical high and low. Every other public
+member, and `MoveEntryState`'s constructor, reaches `GeneratePlays` before
+touching its board, so each refuses the same arguments the same way, with
+the board unchanged; their doc comments inherit the `<exception>` entries
+from `GeneratePlays` rather than restate them. The cost is a null check and
+the roll's two face checks per call.
+
 `GenerateResultingStates` is the position-level view of the same candidate
 list, for consumers that choose among resulting positions and need nothing
 of the plays. One board per candidate,
@@ -570,15 +588,18 @@ int generate_successor_states(
     BgBoardState* outputBuffer,
     int bufferCapacity);
 // Returns successor count (always >= 1; a pass returns one flipped state
-// with no moves applied). Each successor is flipped to the opponent's
-// perspective. See Interop.cs for the buffer-capacity cap.
-// Returns -2 (InvalidPosition), writing nothing, when the input board is
-// not a well-formed position.
+// with no moves applied), writing at most bufferCapacity successors — see
+// Pitfalls on truncation. Each successor is flipped to the opponent's
+// perspective. A refusal writes nothing and returns:
+//   -1 (InvalidArgument)  a null pointer, a negative capacity, a die outside 1-6
+//   -2 (InvalidPosition)  the input board is not a well-formed position
+// and -3 (Failed) reports an exception no argument explains.
 
 int get_starting_position(int variant, int seed, BgBoardState* output);
 // variant: 0 = standard, 1 = nackgammon, 2 = bg960
 // seed:    -1 = no seed; ignored for standard and nackgammon
-// Returns: 0 on success, -1 on unknown variant.
+// Returns: 0 on success; -1 (InvalidArgument) on an unknown variant or a
+// null output; -3 (Failed) if Bg960 finds no position.
 // Output is from the on-roll player's perspective (NOT flipped).
 
 int get_version();
@@ -621,6 +642,22 @@ int get_version();
   caller is fine (BgRLEngine's current model). If multi-thread use ever
   becomes needed, change to `[ThreadStatic]`. Interop tests must run
   sequentially — enforced via `[Collection("Interop")]`.
+- **No exception may cross the native boundary.** An exception leaving an
+  `[UnmanagedCallersOnly]` method terminates the host process — BgRLEngine's
+  Python. Each export's core refuses what it can see (null pointers, a
+  negative capacity, a malformed board) with a status, then catches:
+  `ArgumentException`, the managed surface's refusal of an argument, becomes
+  `InvalidArgument`, and anything else `Failed`. Keep new work inside the
+  cores' `try`; pinned through the exported entry points themselves, called
+  by unmanaged function pointer, by
+  `TheExportedEntryPoints_ReturnStatuses_NeverAnException`.
+- **`MaxSuccessors` is not an upper bound, and a small buffer truncates
+  silently.** `generate_successor_states` writes at most `bufferCapacity`
+  successors and returns the number written. BgRLEngine allocates
+  `MaxSuccessors` (100), but a legal position can have far more distinct
+  plays: fifteen checkers on fifteen points of a race have 1,547 of 1-1,
+  measured on this generator. Such a call returns 100 with the rest dropped,
+  indistinguishable from a position with exactly 100.
 - **NativeAOT exports survive an `internal` declaring type.** `Interop`,
   its `[UnmanagedCallersOnly]` exports, and the `BgBoardState` marshalling
   struct are all `internal`, yet `generate_successor_states`,

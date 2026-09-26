@@ -11,17 +11,32 @@ namespace BgMoveGen;
 ///   - input and every output are always from the on-roll player's perspective.
 ///   - Each successor is flipped before writing so the next call is already oriented.
 ///   - Returns successor count. Pass = 1 (flipped state with no moves applied).
-///     An input board that is not a well-formed position returns
-///     <see cref="Status.InvalidPosition"/> and writes nothing.
+///   - A refused call returns a negative <see cref="Status"/>.
 ///   - NOT thread-safe within a single process. Each OS process gets its own
 ///     instance; multiple Python processes are fully safe. If multi-thread use
 ///     ever needed, change _state to [ThreadStatic].
+///
+/// <para>
+/// <b>No exception crosses the native boundary.</b> An exception leaving an
+/// <c>[UnmanagedCallersOnly]</c> method terminates the host process, so each
+/// export's core refuses what it can see itself (null pointers, a negative
+/// capacity, a malformed board) with a status, and catches the rest:
+/// <see cref="ArgumentException"/> — the managed surface's refusal of an
+/// argument, a die outside 1–6 from <see cref="MoveGenerator.GeneratePlays"/>
+/// — becomes <see cref="Status.InvalidArgument"/>, and any other exception
+/// <see cref="Status.Failed"/>.
+/// </para>
 /// </summary>
 internal static unsafe class Interop
 {
     /// <summary>
-    /// Safe upper bound on successors for any position.
-    /// Allocate output_buffer = (BgBoardState * MaxSuccessors)() on the Python side.
+    /// The output buffer BgRLEngine allocates: output_buffer =
+    /// (BgBoardState * MaxSuccessors)() on the Python side. <b>Not an upper
+    /// bound on successors</b>: a legal position can have far more — fifteen
+    /// checkers on fifteen points of a race have 1,547 distinct plays of 1-1.
+    /// A call writes at most <c>bufferCapacity</c> successors and returns the
+    /// number written, so a buffer smaller than the successor count truncates
+    /// the list without saying so.
     /// </summary>
     public const int MaxSuccessors = 100;
 
@@ -33,11 +48,17 @@ internal static unsafe class Interop
 
     /// <summary>
     /// The exports' status codes: a successful call returns a count or 0, a
-    /// refused one a negative code from here.
+    /// refused one a negative code from here. A refused argument or board is
+    /// refused before anything is written; <see cref="Failed"/> promises
+    /// nothing about the output.
     /// </summary>
     internal enum Status
     {
-        /// <summary>An argument is outside its domain: an unknown starting-position variant.</summary>
+        /// <summary>
+        /// An argument is outside its domain: a null pointer, a negative
+        /// buffer capacity, a die outside 1–6, an unknown starting-position
+        /// variant.
+        /// </summary>
         InvalidArgument = -1,
 
         /// <summary>
@@ -45,6 +66,13 @@ internal static unsafe class Interop
         /// on <see cref="BoardPosition"/>, which decides it.
         /// </summary>
         InvalidPosition = -2,
+
+        /// <summary>
+        /// The call failed inside the library for a reason no argument
+        /// explains; the exception was caught at the boundary, so none
+        /// crosses it.
+        /// </summary>
+        Failed = -3,
     }
 
     // Reused across calls — avoids allocation in the hot path. Reset for each
@@ -79,7 +107,10 @@ internal static unsafe class Interop
     internal static int GetVersion() => Version;
 
     /// <summary>
-    /// Testable core — same logic, callable from managed code.
+    /// Testable core — same logic, callable from managed code, and like the
+    /// export it never throws: a refusal is a negative <see cref="Status"/>
+    /// (see the type summary). Nothing is written before the pointers, the
+    /// capacity, the board and the dice are accepted.
     /// </summary>
     internal static int GenerateSuccessorStatesCore(
         BgBoardState* input,
@@ -87,29 +118,44 @@ internal static unsafe class Interop
         BgBoardState* outputBuffer,
         int bufferCapacity)
     {
-        if (!TryReadPosition(input, out var position))
-            return (int)Status.InvalidPosition;
-        _state.SetPosition(position);
-        int offPlayer = input->OffPlayer;
-        int offOpponent = input->OffOpponent;
+        if (input == null || outputBuffer == null || bufferCapacity < 0)
+            return (int)Status.InvalidArgument;
 
-        var plays = MoveGenerator.GeneratePlays(_state, die1, die2);
-
-        int count = 0;
-        foreach (var play in plays)
+        try
         {
-            if (count >= bufferCapacity) break;
+            if (!TryReadPosition(input, out var position))
+                return (int)Status.InvalidPosition;
+            _state.SetPosition(position);
+            int offPlayer = input->OffPlayer;
+            int offOpponent = input->OffOpponent;
 
-            // The managed successor rule, so the export and GenerateSuccessors
-            // cannot disagree: the play's position, flipped by the value. The
-            // off counts are this layout's own: the mover's grow by the play's
-            // bear-offs, and the two swap sides with the flip.
-            var successor = MoveGenerator.SuccessorPositionOf(_state, in play);
-            ToExternal(successor, offOpponent, offPlayer + BearOffs(in play), &outputBuffer[count]);
-            count++;
+            var plays = MoveGenerator.GeneratePlays(_state, die1, die2);
+
+            int count = 0;
+            foreach (var play in plays)
+            {
+                if (count >= bufferCapacity) break;
+
+                // The managed successor rule, so the export and
+                // GenerateSuccessors cannot disagree: the play's position,
+                // flipped by the value. The off counts are this layout's own:
+                // the mover's grow by the play's bear-offs, and the two swap
+                // sides with the flip.
+                var successor = MoveGenerator.SuccessorPositionOf(_state, in play);
+                ToExternal(successor, offOpponent, offPlayer + BearOffs(in play), &outputBuffer[count]);
+                count++;
+            }
+
+            return count;
         }
-
-        return count;
+        catch (ArgumentException)
+        {
+            return (int)Status.InvalidArgument;
+        }
+        catch (Exception)
+        {
+            return (int)Status.Failed;
+        }
     }
 
     /// <summary>The checkers <paramref name="play"/> bears off: its moves to 0.</summary>
@@ -130,24 +176,40 @@ internal static unsafe class Interop
         BgBoardState* output)
         => GetStartingPositionCore(variant, seed, output);
 
+    /// <summary>
+    /// Testable core of <c>get_starting_position</c>: 0 on success, or a
+    /// negative <see cref="Status"/> having written nothing — never an
+    /// exception (see the type summary).
+    /// </summary>
     internal static int GetStartingPositionCore(
         int variant,
         int seed,
         BgBoardState* output)
     {
-        BoardPosition? start = variant switch
+        if (output == null)
+            return (int)Status.InvalidArgument;
+
+        try
         {
-            0 => BoardPosition.Standard,
-            1 => BoardPosition.Nackgammon,
-            2 => BoardPosition.Bg960(seed == -1 ? null : seed),
-            _ => null
-        };
+            BoardPosition? start = variant switch
+            {
+                0 => BoardPosition.Standard,
+                1 => BoardPosition.Nackgammon,
+                2 => BoardPosition.Bg960(seed == -1 ? null : seed),
+                _ => null
+            };
 
-        if (start is not { } position) return (int)Status.InvalidArgument;   // unknown variant
+            if (start is not { } position) return (int)Status.InvalidArgument;   // unknown variant
 
-        // From the on-roll player's perspective: not flipped, nothing borne off.
-        ToExternal(position, offPlayer: 0, offOpponent: 0, output);
-        return 0;
+            // From the on-roll player's perspective: not flipped, nothing borne off.
+            ToExternal(position, offPlayer: 0, offOpponent: 0, output);
+            return 0;
+        }
+        catch (Exception)
+        {
+            // Bg960 can fail to find a position; nothing else here throws.
+            return (int)Status.Failed;
+        }
     }
 
     // ── Translation helpers ───────────────────────────────────────

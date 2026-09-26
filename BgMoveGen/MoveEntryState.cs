@@ -95,6 +95,11 @@ public sealed class MoveEntryState
     /// The initial position is captured as a value (<see cref="BoardState.ToPosition"/>)
     /// — subsequent mutations of the argument do not affect this instance.
     /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="initialState"/> is null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="die1"/> or <paramref name="die2"/> is outside 1–6 — refused
+    /// by <see cref="MoveGenerator.GeneratePlays"/>, which names the die.
+    /// </exception>
     public MoveEntryState(BoardState initialState, int die1, int die2)
     {
         ArgumentNullException.ThrowIfNull(initialState);

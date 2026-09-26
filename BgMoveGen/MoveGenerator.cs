@@ -483,13 +483,30 @@ public static class MoveGenerator
     /// the opening board) and its <c>_AcrossSyntheticPositions</c> sweep
     /// (84,000 position–roll pairs) beside it, in <c>MoveGeneratorTests</c>.
     /// </para>
+    ///
+    /// <para>
+    /// <b>Arguments are refused here, once.</b> A null <paramref name="state"/>
+    /// and a die outside 1–6 are refused before anything runs; the dice are
+    /// taken as a <see cref="DiceRoll"/>, whose constructor owns the die-face
+    /// rule. Every other public member of this class, and
+    /// <see cref="MoveEntryState"/>'s constructor, reaches this method before
+    /// it touches <paramref name="state"/>, so each refuses the same arguments
+    /// the same way.
+    /// </para>
     /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="state"/> is null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="die1"/> or <paramref name="die2"/> is outside 1–6; the
+    /// exception names the die.
+    /// </exception>
     public static List<Play> GeneratePlays(BoardState state, int die1, int die2)
     {
-        if (die1 == die2)
-            return GenerateDoubles(state, die1);
-        else
-            return GenerateNonDoubles(state, die1, die2);
+        ArgumentNullException.ThrowIfNull(state);
+        var roll = new DiceRoll(die1, die2);
+
+        return roll.IsDouble
+            ? GenerateDoubles(state, roll.High)
+            : GenerateNonDoubles(state, roll.Low, roll.High);
     }
 
     /// <summary>
@@ -531,6 +548,7 @@ public static class MoveGenerator
     /// the boards themselves are ordinary mutable <see cref="BoardState"/>s.
     /// </para>
     /// </summary>
+    /// <inheritdoc cref="GeneratePlays(BoardState, int, int)" path="/exception"/>
     public static IReadOnlyList<BoardState> GenerateResultingStates(BoardState state, int die1, int die2)
     {
         var plays = GeneratePlays(state, die1, die2);
@@ -573,6 +591,7 @@ public static class MoveGenerator
     /// decision; this method only enumerates them.
     /// </para>
     /// </summary>
+    /// <inheritdoc cref="GeneratePlays(BoardState, int, int)" path="/exception"/>
     public static IReadOnlyList<CandidatePlay> GenerateCandidatePlays(BoardState state, int die1, int die2)
     {
         var plays = GeneratePlays(state, die1, die2);
@@ -616,6 +635,7 @@ public static class MoveGenerator
     /// <paramref name="state"/> is left unchanged.
     /// </para>
     /// </summary>
+    /// <inheritdoc cref="GeneratePlays(BoardState, int, int)" path="/exception"/>
     public static IReadOnlyList<Successor> GenerateSuccessors(BoardState state, int die1, int die2)
     {
         var plays = GeneratePlays(state, die1, die2);
@@ -690,6 +710,7 @@ public static class MoveGenerator
     /// should drive the generator directly.
     /// </para>
     /// </summary>
+    /// <inheritdoc cref="GeneratePlays(BoardState, int, int)" path="/exception"/>
     public static bool IsLegalPlay(BoardState state, Play play, int die1, int die2)
     {
         var legal = GeneratePlays(state, die1, die2);
@@ -720,6 +741,11 @@ public static class MoveGenerator
     /// directly.
     /// </para>
     /// </summary>
+    /// <inheritdoc cref="GeneratePlays(BoardState, int, int)" path="/exception"/>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="play"/> is not legal for <paramref name="state"/> and the
+    /// dice; <paramref name="state"/> is unchanged.
+    /// </exception>
     public static void ApplyPlay(BoardState state, Play play, int die1, int die2)
     {
         if (!IsLegalPlay(state, play, die1, die2))

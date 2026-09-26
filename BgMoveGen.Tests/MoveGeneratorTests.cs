@@ -878,6 +878,79 @@ public class GenerateSuccessorsTests
     }
 }
 
+public class ArgumentValidationTests
+{
+    // halheinrich/backgammon#244: a null state and a die outside 1-6 are
+    // refused once, in GeneratePlays, and every public entry inherits the
+    // refusal — each is called here, not assumed.
+    public static TheoryData<string> Entries =>
+    [
+        nameof(MoveGenerator.GeneratePlays),
+        nameof(MoveGenerator.GenerateResultingStates),
+        nameof(MoveGenerator.GenerateCandidatePlays),
+        nameof(MoveGenerator.GenerateSuccessors),
+        nameof(MoveGenerator.IsLegalPlay),
+        nameof(MoveGenerator.ApplyPlay),
+        nameof(MoveEntryState),
+    ];
+
+    public static TheoryData<string, int, int, string> EntriesWithABadDie()
+    {
+        var data = new TheoryData<string, int, int, string>();
+        foreach (string entry in Entries)
+        {
+            data.Add(entry, 0, 3, "die1");
+            data.Add(entry, 7, 3, "die1");
+            data.Add(entry, 3, 0, "die2");
+            data.Add(entry, 3, 7, "die2");
+            data.Add(entry, -1, -1, "die1");
+            data.Add(entry, 4, int.MinValue, "die2");
+        }
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(Entries))]
+    public void NullState_IsRefused(string entry)
+    {
+        var refusal = Assert.Throws<ArgumentNullException>(() => Call(entry, null, 3, 1));
+
+        Assert.Equal(entry == nameof(MoveEntryState) ? "initialState" : "state", refusal.ParamName);
+    }
+
+    [Theory]
+    [MemberData(nameof(EntriesWithABadDie))]
+    public void DieOutsideOneToSix_IsRefused_NamingTheDie_BeforeTheStateIsTouched(
+        string entry, int die1, int die2, string refusedDie)
+    {
+        var state = BoardState.Standard();
+
+        var refusal = Assert.Throws<ArgumentOutOfRangeException>(() => Call(entry, state, die1, die2));
+
+        Assert.Equal(refusedDie, refusal.ParamName);
+        Assert.Equal(BoardPosition.Standard, state.ToPosition());
+        Assert.Equal(BoardState.Standard().HighPointOccupied, state.HighPointOccupied);
+    }
+
+    /// <summary>A play legal on the opening board with 6-4, for the entries that take one.</summary>
+    private static readonly Play OpeningSixFour = [new(24, 18), new(13, 9)];
+
+    private static object? Call(string entry, BoardState? state, int die1, int die2)
+    {
+        switch (entry)
+        {
+            case nameof(MoveGenerator.GeneratePlays): return MoveGenerator.GeneratePlays(state!, die1, die2);
+            case nameof(MoveGenerator.GenerateResultingStates): return MoveGenerator.GenerateResultingStates(state!, die1, die2);
+            case nameof(MoveGenerator.GenerateCandidatePlays): return MoveGenerator.GenerateCandidatePlays(state!, die1, die2);
+            case nameof(MoveGenerator.GenerateSuccessors): return MoveGenerator.GenerateSuccessors(state!, die1, die2);
+            case nameof(MoveGenerator.IsLegalPlay): return MoveGenerator.IsLegalPlay(state!, OpeningSixFour, die1, die2);
+            case nameof(MoveGenerator.ApplyPlay): MoveGenerator.ApplyPlay(state!, OpeningSixFour, die1, die2); return null;
+            case nameof(MoveEntryState): return new MoveEntryState(state!, die1, die2);
+            default: throw new ArgumentOutOfRangeException(nameof(entry), entry, "Not a public entry.");
+        }
+    }
+}
+
 public class PerformanceTests
 {
     [Fact]
