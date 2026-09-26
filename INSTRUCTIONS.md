@@ -795,11 +795,11 @@ int get_version();
   architecture section.
 - **Plays are compared only from a position, and never here.** Identity is
   BgDataTypes_Lib's: `BoardState.IsSamePlay`, whose doc comment is its one
-  statement, and `IndexOfSamePlay`, the list match `IsLegalPlay` uses. `Play`
-  has no equality — `==` does not compile, and `Equals`, hashing, and
-  anything built on them (`HashSet<Play>`, `Distinct`, xUnit's
-  `Assert.Equal` on plays) throw. Do not reintroduce a board-less
-  comparison or a notation key here; compare exact encodings with
+  statement, and `IndexOfSamePlay`, the list match `IsLegalPlay` uses.
+  `Play` offers no equality of its own; what that means for code that
+  compares or hashes plays is stated on `Play`'s doc comment, not here.
+  Do not reintroduce a board-less comparison or a notation key here;
+  compare exact encodings with
   `Play.IsSameEncoding` only where the encoding itself is the contract (a
   `CandidatePlay` or `CompletedPlay` is the generator's own).
 
