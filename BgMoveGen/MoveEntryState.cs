@@ -94,20 +94,21 @@ public sealed class MoveEntryState
     private Play? _completedPlay;
 
     /// <summary>
-    /// Construct from an initial board state and the two dice rolled.
-    /// The initial position is captured as a value (<see cref="BoardState.ToPosition"/>)
-    /// — subsequent mutations of the argument do not affect this instance.
+    /// Construct from the starting position, in the mover's frame, and the two
+    /// dice rolled — the one way in. The entry state only reads its start, so
+    /// it takes the position value; it builds the board it assembles the play
+    /// on itself, and no caller holds that board.
     /// </summary>
-    /// <exception cref="ArgumentNullException"><paramref name="initialState"/> is null.</exception>
+    /// <param name="initial">The position the play starts from, in the mover's frame.</param>
+    /// <param name="die1">One die rolled, 1–6.</param>
+    /// <param name="die2">The other die rolled, 1–6.</param>
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="die1"/> or <paramref name="die2"/> is outside 1–6 — refused
     /// by <see cref="MoveGenerator.GeneratePlays"/>, which names the die.
     /// </exception>
-    public MoveEntryState(BoardState initialState, int die1, int die2)
+    public MoveEntryState(BoardPosition initial, int die1, int die2)
     {
-        ArgumentNullException.ThrowIfNull(initialState);
-
-        _initial = initialState.ToPosition();
+        _initial = initial;
         _currentState = new BoardState(_initial);
         AppliedMoves = _appliedMoves.AsReadOnly();
 

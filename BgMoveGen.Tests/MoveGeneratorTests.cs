@@ -861,15 +861,29 @@ public class GenerateSuccessorsTests
     }
 
     [Fact]
-    public void Successor_HasNoEquality()
+    public void Successor_IsAValueOnlyBgMoveGenBuilds_WithNoEquality()
     {
-        // It holds a Play, which has none (halheinrich/backgammon#273, ruling
-        // 1): no == to compile, and the runtime routes throw rather than fall
-        // back to a field-wise comparison of the play.
-        var successor = MoveGenerator.GenerateSuccessors(BoardState.Standard(), 6, 4)[0];
+        // Construction: a readonly value type whose only constructor is
+        // internal, with get-only members — so a successor a consumer holds is
+        // one the generator paired, or default, and nothing it does to what
+        // it reads reaches the pairing. Equality: none — it holds a Play,
+        // which has none (halheinrich/backgammon#273, ruling 1): no == to
+        // compile, and the runtime routes throw rather than compare the play
+        // field-wise.
+        var type = typeof(Successor);
+        Assert.True(type.IsValueType);
+        Assert.Contains(type.CustomAttributes,
+            a => a.AttributeType.FullName == "System.Runtime.CompilerServices.IsReadOnlyAttribute");
+        Assert.Empty(type.GetConstructors());
+        Assert.All(type.GetProperties(), p => Assert.Null(p.SetMethod));
 
-        Assert.Null(typeof(Successor).GetMethod("op_Equality"));
-        Assert.Null(typeof(Successor).GetMethod("op_Inequality"));
+        Successor none = default;
+        Assert.Equal(0, none.Play.Count);
+        Assert.Equal(BoardPosition.Empty, none.Position);
+
+        var successor = MoveGenerator.GenerateSuccessors(BoardState.Standard(), 6, 4)[0];
+        Assert.Null(type.GetMethod("op_Equality"));
+        Assert.Null(type.GetMethod("op_Inequality"));
         Assert.Throws<NotSupportedException>(() => successor.Equals((object)successor));
         Assert.Throws<NotSupportedException>(() => successor.GetHashCode());
         Assert.Throws<NotSupportedException>(() => new HashSet<Successor> { successor });
@@ -880,8 +894,10 @@ public class ArgumentValidationTests
 {
     // halheinrich/backgammon#244: a null state and a die outside 1-6 are
     // refused once, in GeneratePlays, and every public entry inherits the
-    // refusal — each is called here, not assumed.
-    public static TheoryData<string> Entries =>
+    // refusal — each is called here, not assumed. MoveEntryState takes its
+    // start as a BoardPosition value, which cannot be null, so it is in the
+    // die table only.
+    public static TheoryData<string> StateEntries =>
     [
         nameof(MoveGenerator.GeneratePlays),
         nameof(MoveGenerator.GenerateResultingPositions),
@@ -889,8 +905,9 @@ public class ArgumentValidationTests
         nameof(MoveGenerator.GenerateSuccessors),
         nameof(MoveGenerator.IsLegalPlay),
         nameof(MoveGenerator.ApplyPlay),
-        nameof(MoveEntryState),
     ];
+
+    public static TheoryData<string> Entries => [.. StateEntries, nameof(MoveEntryState)];
 
     public static TheoryData<string, int, int, string> EntriesWithABadDie()
     {
@@ -908,12 +925,12 @@ public class ArgumentValidationTests
     }
 
     [Theory]
-    [MemberData(nameof(Entries))]
+    [MemberData(nameof(StateEntries))]
     public void NullState_IsRefused(string entry)
     {
         var refusal = Assert.Throws<ArgumentNullException>(() => Call(entry, null, 3, 1));
 
-        Assert.Equal(entry == nameof(MoveEntryState) ? "initialState" : "state", refusal.ParamName);
+        Assert.Equal("state", refusal.ParamName);
     }
 
     [Theory]
@@ -943,7 +960,7 @@ public class ArgumentValidationTests
             case nameof(MoveGenerator.GenerateSuccessors): return MoveGenerator.GenerateSuccessors(state!, die1, die2);
             case nameof(MoveGenerator.IsLegalPlay): return MoveGenerator.IsLegalPlay(state!, OpeningSixFour, die1, die2);
             case nameof(MoveGenerator.ApplyPlay): MoveGenerator.ApplyPlay(state!, OpeningSixFour, die1, die2); return null;
-            case nameof(MoveEntryState): return new MoveEntryState(state!, die1, die2);
+            case nameof(MoveEntryState): return new MoveEntryState(state!.ToPosition(), die1, die2);
             default: throw new ArgumentOutOfRangeException(nameof(entry), entry, "Not a public entry.");
         }
     }

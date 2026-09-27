@@ -372,8 +372,9 @@ pip-floor retry loop). BgMoveGen exposes it through the
   bear-off, and across the synthetic corpus); performance benchmarks;
   `GenerateSuccessors` contract (play `i` by encoding, the board
   `ApplyPlay` leaves, distinct positions, the pass flipped, input
-  untouched, no allocation per successor, no equality); argument refusal on
-  every public entry (a null state, each die outside 1–6, the board
+  untouched, no allocation per successor, and `Successor`'s construction
+  and missing equality); argument refusal on every public entry (a null
+  state on each that takes a board, each die outside 1–6 on all, the board
   untouched); interop (successor count, flip correctness, off-count
   tracking, checker conservation, pass detection, the reused board's reset
   across successive calls and agreement with `GenerateSuccessors`, the
@@ -509,11 +510,13 @@ a null state throws `ArgumentNullException`, and a die outside 1–6
 `ArgumentOutOfRangeException` naming the die — the dice are taken as a
 BgDataTypes_Lib `DiceRoll`, whose constructor owns the die-face rule, and
 the generator reads the roll's canonical high and low. Every other public
-member, and `MoveEntryState`'s constructor, reaches `GeneratePlays` before
-touching its board, so each refuses the same arguments the same way, with
-the board unchanged; their doc comments inherit the `<exception>` entries
-from `GeneratePlays` rather than restate them. The cost is a null check and
-the roll's two face checks per call.
+member reaches `GeneratePlays` before touching its board, so each refuses
+the same arguments the same way, with the board unchanged.
+`MoveEntryState`'s constructor takes its start as a `BoardPosition` value,
+which cannot be null, and refuses a die outside 1–6 the same way, through
+`GeneratePlays`. Their doc comments inherit the `<exception>` entries from
+`GeneratePlays` rather than restate them. The cost is a null check and the
+roll's two face checks per call.
 
 **Every candidate view hands out values** (Hal's ruling of 2026-09-26,
 halheinrich/backgammon#273): positions as `BoardPosition`, pairs as value
@@ -599,9 +602,11 @@ Stateful one-click `Play` assembly. Anchored on
 Architecture and Pitfalls below. Consumed by BgDiag_Razor's
 `BackgammonPlayEntry`. Public surface, complete:
 
-- `MoveEntryState(BoardState initialState, int die1, int die2)` — captures
-  the start as a position value; refuses a null state and a die outside
-  1–6 (through `GeneratePlays`).
+- `MoveEntryState(BoardPosition initial, int die1, int die2)` — the one
+  way in: the entry state only reads its start, so it takes the position
+  value (Hal's ruling of 2026-09-26, halheinrich/backgammon#273) and builds
+  the board it assembles the play on itself. Refuses a die outside 1–6
+  (through `GeneratePlays`).
 - Clicks, each → `ClickOutcome` (`Illegal`, `MoveCommitted`,
   `PlayCompleted`), with no state change on `Illegal`:
   `TryAdvanceFrom(int point, IReadOnlyList<int> diePreference)` (advance
