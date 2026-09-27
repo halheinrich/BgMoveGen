@@ -23,6 +23,13 @@
     <ProjectReference Include="..\BgMoveGen\BgMoveGen.csproj" />
   </ItemGroup>
 
+  <!-- What consumers' tests share, from the data layer: the allocation probe
+       every allocation pin measures through (AllocationProbe), stated once
+       there and pinned by its own suite, so this project keeps no copy. -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\BgDataTypes_Lib\BgDataTypes_Lib.TestSupport\BgDataTypes_Lib.TestSupport.csproj" />
+  </ItemGroup>
+
   <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>

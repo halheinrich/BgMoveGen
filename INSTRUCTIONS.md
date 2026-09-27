@@ -28,6 +28,10 @@ contributes the move-generation algorithms over them. The split
 keeps the data shape reusable from non-move-gen consumers (game substrate,
 diagram rendering, filters) without dragging them through this library.
 
+`BgDataTypes_Lib.TestSupport` — for the tests only: `AllocationProbe`, the
+one steady-state allocation measurement every allocation pin reads through,
+pinned by BgDataTypes_Lib's own suite.
+
 BgRLEngine is a downstream consumer via the NativeAOT interop surface, but
 that arrow points outward — BgMoveGen knows nothing about it.
 
@@ -70,10 +74,10 @@ click entry, interop), plus the helpers they share: `SyntheticPositions`,
 the deterministic, seed-generated board corpus the breadth sweeps share (see
 Validation below); `Boards`, the hand-built boards more than one test class
 uses; `Replay`, the tests' own replay of a move sequence to the position it
-reaches; `PlayText`, a play's raw encoding for failure messages; and
-`AllocationProbe`, the steady-state allocation measurement the allocation
-pins read through (BgDataTypes_Lib's method). A test builds a board from its
-counts (`BoardState.FromMop`); it cannot write one.
+reaches; and `PlayText`, a play's raw encoding for failure messages. The
+allocation pins measure through BgDataTypes_Lib.TestSupport's
+`AllocationProbe`, referenced rather than copied. A test builds a board from
+its counts (`BoardState.FromMop`); it cannot write one.
 
 **`BgMoveGen.Benchmarks/`** — a BenchmarkDotNet harness over the generator
 and the native export: `Program.cs` is the `BenchmarkSwitcher` entry point,

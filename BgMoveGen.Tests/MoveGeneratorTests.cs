@@ -1,5 +1,6 @@
 using BgMoveGen;
 using BgDataTypes_Lib;
+using BgDataTypes_Lib.TestSupport;
 
 namespace BgMoveGen.Tests;
 

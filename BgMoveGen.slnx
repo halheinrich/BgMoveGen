@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="../BgDataTypes_Lib/BgDataTypes_Lib/BgDataTypes_Lib.csproj" />
+  <Project Path="../BgDataTypes_Lib/BgDataTypes_Lib.TestSupport/BgDataTypes_Lib.TestSupport.csproj" />
   <Project Path="BgMoveGen.Benchmarks/BgMoveGen.Benchmarks.csproj" />
   <Project Path="BgMoveGen.Tests/BgMoveGen.Tests.csproj" />
   <Project Path="BgMoveGen/BgMoveGen.csproj" />
