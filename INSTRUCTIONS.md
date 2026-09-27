@@ -802,6 +802,26 @@ int get_version();
   **Benchmarks** for that ruling and the two reads that make it safe.
   Sequential "measure, edit, measure" with nothing watching the machine
   remains not a valid comparison here.
+
+  **Pin both variants to the same cores.** This machine's CPU is hybrid
+  (an i9-12900K: logical processors 0–15 are its P-cores' hyperthreads,
+  16–23 its E-cores), and with the rollouts running, Windows places each
+  benchmark process on one kind or the other. Measured on the
+  play-identity leg (2026-09-26, the item-1 comparison in
+  halheinrich/backgammon#273): unpinned runs split about 1.6x by placement —
+  every row of a run moved together, the canary included (about 920 ns on
+  P-cores, about 1,490 ns on E-cores) — and one variant drew E-cores four
+  runs running, so an unpinned A/B can differ by placement rather than by
+  code. Three rounds pinned to the E-cores held the canary within 2%:
+
+  ```
+  dotnet run -c Release --project BgMoveGen.Benchmarks -- --affinity 16711680 --filter '*'
+  ```
+
+  `16711680` is `0xFF0000`, the E-cores, which the rollouts leave lightly
+  loaded; the absolute figures are E-core figures, so compare only runs
+  pinned alike. Whether placement accounts for the older 1.6x runs above has
+  not been tested.
 - **`IsLegalPlay` and `ApplyPlay` are not hot-path.** Both re-enumerate
   via `GeneratePlays`. Acceptable for turn-boundary validation; for
   inner-loop repeated checks, drive the generator directly.
