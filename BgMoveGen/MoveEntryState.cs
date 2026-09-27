@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using BgDataTypes_Lib;
 
@@ -88,7 +89,8 @@ public sealed class MoveEntryState
     private readonly List<int> _appliedDice = new(4);
     /// <summary>Dice not yet consumed by an applied move.</summary>
     private readonly List<int> _remainingDice = new(4);
-    private HashSet<int> _legalNextClicks = [];
+    /// <summary>The legal clicks as of the last recompute: a fresh set each time, never changed after.</summary>
+    private ReadOnlySet<int> _legalNextClicks = ReadOnlySet<int>.Empty;
     private Play? _completedPlay;
 
     /// <summary>
@@ -107,6 +109,7 @@ public sealed class MoveEntryState
 
         _initial = initialState.ToPosition();
         _currentState = new BoardState(_initial);
+        AppliedMoves = _appliedMoves.AsReadOnly();
 
         _die1 = die1;
         _die2 = die2;
@@ -143,6 +146,13 @@ public sealed class MoveEntryState
     /// Points the user can usefully click next: the set of points that have a legal
     /// advancing move now (the valid arguments to <see cref="TryAdvanceFrom"/>).
     /// </summary>
+    /// <remarks>
+    /// A snapshot, taken at the last click or undo: a set read before a later click
+    /// keeps the points it had, and a fresh read has the new ones. It cannot be
+    /// written, whatever it is cast to — it is a <see cref="ReadOnlySet{T}"/> over a
+    /// set nothing changes after it is built, so every write through any interface
+    /// it implements throws <see cref="NotSupportedException"/>.
+    /// </remarks>
     public IReadOnlyCollection<int> LegalNextClicks => _legalNextClicks;
 
     /// <summary>True iff a full play has been assembled.</summary>
@@ -152,7 +162,15 @@ public sealed class MoveEntryState
     public Play? CompletedPlay => _completedPlay;
 
     /// <summary>Moves applied so far, in the order the user clicked them.</summary>
-    public IReadOnlyList<Move> AppliedMoves => _appliedMoves;
+    /// <remarks>
+    /// A live view: one held across clicks and undos reads the moves as they stand
+    /// now. It cannot be written, whatever it is cast to — it is a
+    /// <see cref="System.Collections.ObjectModel.ReadOnlyCollection{T}"/> over the
+    /// entry state's own list, so every write through any interface it implements
+    /// throws <see cref="NotSupportedException"/>, and the bookkeeping that counts
+    /// the list (<see cref="IsComplete"/>) cannot be changed behind it.
+    /// </remarks>
+    public IReadOnlyList<Move> AppliedMoves { get; }
 
     // ── Click handling ────────────────────────────────────────────
 
@@ -568,7 +586,7 @@ public sealed class MoveEntryState
         {
             foreach (var (m, _) in ComputeLegalNextSingleMoves()) clicks.Add(m.FrPt);
         }
-        _legalNextClicks = clicks;
+        _legalNextClicks = new ReadOnlySet<int>(clicks);
     }
 
     /// <summary>

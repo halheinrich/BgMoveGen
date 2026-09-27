@@ -110,6 +110,106 @@ public class MoveEntryStateTests
 
     // ── Construction ──────────────────────────────────────────────
 
+    /// <summary>
+    /// No write through any interface <paramref name="exposed"/> implements
+    /// succeeds: each writable collection interface it implements has every
+    /// mutator throw <see cref="NotSupportedException"/>, and every other
+    /// interface it implements is one with no mutators at all — so a cast
+    /// finds no way to write it, and a new interface the type picks up fails
+    /// here until it is checked.
+    /// </summary>
+    private static void AssertNoWriteSucceeds<T>(IEnumerable<T> exposed, T sample)
+    {
+        var checkedInterfaces = new HashSet<Type>();
+
+        if (exposed is ICollection<T> collection)
+        {
+            Assert.True(collection.IsReadOnly);
+            Assert.Throws<NotSupportedException>(() => collection.Add(sample));
+            Assert.Throws<NotSupportedException>(() => collection.Remove(sample));
+            Assert.Throws<NotSupportedException>(() => collection.Clear());
+            checkedInterfaces.Add(typeof(ICollection<T>));
+        }
+        if (exposed is IList<T> list)
+        {
+            Assert.Throws<NotSupportedException>(() => list.Insert(0, sample));
+            Assert.Throws<NotSupportedException>(() => list.RemoveAt(0));
+            Assert.Throws<NotSupportedException>(() => list[0] = sample);
+            checkedInterfaces.Add(typeof(IList<T>));
+        }
+        if (exposed is ISet<T> set)
+        {
+            Assert.Throws<NotSupportedException>(() => set.Add(sample));
+            Assert.Throws<NotSupportedException>(() => set.UnionWith([sample]));
+            Assert.Throws<NotSupportedException>(() => set.IntersectWith([sample]));
+            Assert.Throws<NotSupportedException>(() => set.ExceptWith([sample]));
+            Assert.Throws<NotSupportedException>(() => set.SymmetricExceptWith([sample]));
+            checkedInterfaces.Add(typeof(ISet<T>));
+        }
+        if (exposed is System.Collections.IList untyped)
+        {
+            Assert.True(untyped.IsReadOnly);
+            Assert.Throws<NotSupportedException>(() => untyped.Add(sample));
+            Assert.Throws<NotSupportedException>(() => untyped.Insert(0, sample));
+            Assert.Throws<NotSupportedException>(() => untyped.Remove(sample));
+            Assert.Throws<NotSupportedException>(() => untyped.RemoveAt(0));
+            Assert.Throws<NotSupportedException>(() => untyped.Clear());
+            Assert.Throws<NotSupportedException>(() => untyped[0] = sample);
+            checkedInterfaces.Add(typeof(System.Collections.IList));
+        }
+
+        Type[] withoutMutators =
+        [
+            typeof(IEnumerable<T>), typeof(System.Collections.IEnumerable),
+            typeof(IReadOnlyCollection<T>), typeof(IReadOnlyList<T>), typeof(IReadOnlySet<T>),
+            typeof(System.Collections.ICollection),
+        ];
+        foreach (var implemented in exposed.GetType().GetInterfaces())
+            Assert.True(checkedInterfaces.Contains(implemented) || withoutMutators.Contains(implemented),
+                $"{exposed.GetType()} implements {implemented}, which this check does not cover.");
+    }
+
+    [Fact]
+    public void AppliedMoves_IsALiveView_ThatNoCastMakesWritable()
+    {
+        // halheinrich/backgammon#273: AppliedMoves handed out the live list
+        // behind IReadOnlyList, and a cast back to List<Move> could write the
+        // list IsComplete counts. It is a read-only view: held across a click
+        // it reads the new move, as the list did, and no interface writes it.
+        var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
+        var moves = entry.AppliedMoves;
+        entry.TryAdvanceFrom(8, new[] { 3, 1 });
+
+        Assert.Equal(new Move(8, 5), Assert.Single(moves));
+        Assert.IsNotType<List<Move>>(moves);
+        AssertNoWriteSucceeds(moves, new Move(24, 23));
+
+        Assert.Equal(new Move(8, 5), Assert.Single(entry.AppliedMoves));
+        Assert.False(entry.IsComplete);
+        Assert.Equal(ClickOutcome.PlayCompleted, entry.TryAdvanceFrom(6, new[] { 3, 1 }));
+        Assert.Equal(2, moves.Count);
+    }
+
+    [Fact]
+    public void LegalNextClicks_IsASnapshot_ThatNoCastMakesWritable()
+    {
+        // LegalNextClicks handed out the live set behind IReadOnlyCollection.
+        // The set is rebuilt at each click, so it is a snapshot: one read
+        // before a click keeps its points, a fresh read has the new ones, and
+        // no interface writes either.
+        var entry = new MoveEntryState(BoardState.Standard(), 3, 1);
+        var opening = entry.LegalNextClicks;
+        Assert.Equal(new HashSet<int> { 24, 13, 8, 6 }, new HashSet<int>(opening));
+
+        Assert.IsNotType<HashSet<int>>(opening);
+        AssertNoWriteSucceeds(opening, 7);
+
+        entry.TryAdvanceFrom(8, new[] { 3, 1 });   // 8/5; the 1 remains
+        Assert.Equal(new HashSet<int> { 24, 13, 8, 6 }, new HashSet<int>(opening));
+        Assert.Contains(5, entry.LegalNextClicks);
+        Assert.DoesNotContain(5, opening);
+    }
+
     [Fact]
     public void CurrentPosition_IsTheIntermediatePosition_AfterEachClick()
     {

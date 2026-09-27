@@ -598,9 +598,17 @@ Architecture and Pitfalls below. Consumed by BgDiag_Razor's
 - Undo: `UndoLast()`, `UndoAll()`.
 - State: `Die1`, `Die2` (the dice as passed), `CurrentPosition` (the
   intermediate position, a `BoardPosition`), `LegalNextClicks` (the source
-  points with a legal advance now), `AppliedMoves` (the committed moves, in
-  click order), `IsComplete`, and `CompletedPlay` (the generated play
-  reached, or null while in progress).
+  points with a legal advance now — a snapshot taken at each click or
+  undo), `AppliedMoves` (the committed moves, in click order — a live
+  view), `IsComplete`, and `CompletedPlay` (the generated play reached, or
+  null while in progress).
+
+Nothing it hands out can be written. `CurrentPosition` is a value;
+`AppliedMoves` is a `ReadOnlyCollection<Move>` over the entry state's own
+list, and `LegalNextClicks` a `ReadOnlySet<int>` over a set rebuilt at each
+recompute and never changed after, so a write through any interface either
+implements throws `NotSupportedException` — no cast reaches the list that
+`IsComplete` counts, or the set.
 
 `CurrentPosition` is the intermediate position as a `BoardPosition` value —
 readable, never writable. The board the entry state assembles the play on
