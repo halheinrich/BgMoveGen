@@ -483,168 +483,143 @@ public class ReferenceCorrectnessTests
     };
 }
 
-public class GenerateResultingStatesTests
+public class GenerateResultingPositionsTests
 {
+    // A sink the allocation pin's paths write, so no allocation can be elided.
+    private static object? _kept;
+
     [Fact]
-    public void GenerateResultingStates_MatchesFinalBoardsOfGeneratePlays_AcrossSyntheticPositions()
+    public void GenerateResultingPositions_AreTheFinalPositionsOfGeneratePlays_AcrossSyntheticPositions()
     {
-        // The defining relation: board i is exactly the input with candidate
-        // i's moves applied — same count, same order, and HighPointOccupied
-        // carried along — across a corpus that reaches bar entry, hits and
-        // bear-offs, not only the opening board.
+        // The defining relation: position i is exactly the input with
+        // candidate i's moves applied — same count, same order — across a
+        // corpus that reaches bar entry, hits and bear-offs, not only the
+        // opening board.
         foreach ((int index, int[] mop) in SyntheticPositions.Corpus(1_000).Index())
         {
             foreach ((int die1, int die2) in SyntheticPositions.AllRolls())
             {
                 var state = BoardState.FromMop(mop);
                 var plays = MoveGenerator.GeneratePlays(state, die1, die2);
-                var states = MoveGenerator.GenerateResultingStates(state, die1, die2);
+                var positions = MoveGenerator.GenerateResultingPositions(state, die1, die2);
 
-                Assert.Equal(plays.Count, states.Count);
+                Assert.Equal(plays.Count, positions.Count);
                 for (int i = 0; i < plays.Count; i++)
-                {
-                    var expected = state.Copy();
-                    for (int j = 0; j < plays[i].Count; j++)
-                        expected.ApplyMove(plays[i][j]);
-
-                    Assert.True(expected.ToPosition() == states[i].ToPosition(),
-                        $"Position {index} {die1}-{die2}: board {i} is not candidate {i} applied.");
-                    Assert.Equal(expected.HighPointOccupied, states[i].HighPointOccupied);
-                }
+                    Assert.True(Replay.PositionAfter(state, plays[i]) == positions[i],
+                        $"Position {index} {die1}-{die2}: position {i} is not candidate {i} applied.");
             }
         }
     }
 
     [Fact]
-    public void GenerateResultingStates_BoardsAreInMoversFrame_NotFlipped()
+    public void GenerateResultingPositions_AreInMoversFrame_NotFlipped()
     {
-        // Opening 3-1 cannot hit, so in the mover's frame every resulting board
-        // keeps the opponent's four stacks exactly where they started; a flip
-        // would move them to 25 - i. The point-making 8/5 6/5 must be present
-        // exactly as the mover sees it.
-        var state = BoardState.Standard();
+        // Opening 3-1 cannot hit, so in the mover's frame every resulting
+        // position keeps the opponent's four stacks exactly where they
+        // started; a flip would move them to 25 - i. The point-making 8/5 6/5
+        // must be present exactly as the mover sees it.
+        var positions = MoveGenerator.GenerateResultingPositions(BoardState.Standard(), 3, 1);
 
-        var states = MoveGenerator.GenerateResultingStates(state, 3, 1);
-
-        foreach (var s in states)
+        foreach (var p in positions)
         {
-            Assert.Equal(-2, s.Points[1]);
-            Assert.Equal(-5, s.Points[12]);
-            Assert.Equal(-3, s.Points[17]);
-            Assert.Equal(-5, s.Points[19]);
+            Assert.Equal(-2, p[1]);
+            Assert.Equal(-5, p[12]);
+            Assert.Equal(-3, p[17]);
+            Assert.Equal(-5, p[19]);
         }
 
-        var pointMade = Boards.OpeningAfterMakingTheFivePoint();
-        Assert.Contains(states, s => s.ToPosition() == pointMade.ToPosition());
+        Assert.Contains(Boards.OpeningAfterMakingTheFivePoint().ToPosition(), positions);
     }
 
     [Fact]
-    public void GenerateResultingStates_NoLegalMove_ReturnsSingleCopyEqualToInput()
+    public void GenerateResultingPositions_NoLegalMove_ReturnsTheInputPosition()
     {
         var state = Boards.ClosedOut();
 
-        var states = MoveGenerator.GenerateResultingStates(state, 6, 4);
+        var only = Assert.Single(MoveGenerator.GenerateResultingPositions(state, 6, 4));
 
-        var only = Assert.Single(states);
-        Assert.NotSame(state, only);
-        Assert.False(state.Points.Overlaps(only.Points));
-        Assert.Equal(state.ToPosition(), only.ToPosition());
-        Assert.Equal(state.HighPointOccupied, only.HighPointOccupied);
+        Assert.Equal(state.ToPosition(), only);
     }
 
     [Theory]
     [InlineData(3, 1)]
     [InlineData(6, 5)]
     [InlineData(2, 2)]
-    public void GenerateResultingStates_DoesNotMutateInput(int die1, int die2)
+    public void GenerateResultingPositions_DoesNotMutateInput(int die1, int die2)
     {
         var state = BoardState.Standard();
-        var original = state.Copy();
 
-        MoveGenerator.GenerateResultingStates(state, die1, die2);
+        MoveGenerator.GenerateResultingPositions(state, die1, die2);
 
-        Assert.Equal(original.ToPosition(), state.ToPosition());
-        Assert.Equal(original.HighPointOccupied, state.HighPointOccupied);
+        Assert.Equal(BoardPosition.Standard, state.ToPosition());
+        Assert.Equal(BoardState.Standard().HighPointOccupied, state.HighPointOccupied);
     }
 
     [Fact]
-    public void GenerateResultingStates_BoardsAreIndependentCallerOwnedCopies()
+    public void GenerateResultingPositions_AreDistinct_AcrossSyntheticPositions()
     {
-        // Ownership is the contract, not immutability: a caller may scribble
-        // on any returned board without reaching the input, another result,
-        // or a later call's results.
-        var state = BoardState.Standard();
-        var original = state.Copy();
-
-        var states = MoveGenerator.GenerateResultingStates(state, 6, 5);
-        Assert.True(states.Count > 1);
-        var snapshot = states.Select(s => s.Copy()).ToList();
-
-        for (int i = 0; i < states.Count; i++)
-        {
-            Assert.False(state.Points.Overlaps(states[i].Points));
-            for (int j = i + 1; j < states.Count; j++)
-                Assert.False(states[i].Points.Overlaps(states[j].Points));
-        }
-
-        // The one whole-board write a caller has: every slot and the high
-        // point change at once.
-        states[0].SetPosition(BoardPosition.Empty);
-
-        Assert.Equal(original.ToPosition(), state.ToPosition());
-        Assert.Equal(original.HighPointOccupied, state.HighPointOccupied);
-        for (int i = 1; i < states.Count; i++)
-            Assert.Equal(snapshot[i].ToPosition(), states[i].ToPosition());
-
-        var again = MoveGenerator.GenerateResultingStates(state, 6, 5);
-        Assert.Equal(snapshot.Count, again.Count);
-        for (int i = 0; i < again.Count; i++)
-            Assert.Equal(snapshot[i].ToPosition(), again[i].ToPosition());
-    }
-
-    [Fact]
-    public void GenerateResultingStates_BoardsAreDistinct_AcrossSyntheticPositions()
-    {
-        // The reference sweep compares board *sets*, which a repeated board
-        // survives, so this compares the boards themselves, as BoardPosition
-        // values whose equality decides — a hash only buckets them. It pins
-        // the property a consumer choosing among positions relies on: no
-        // position is returned — and so weighted — twice.
+        // The reference sweep compares position *sets*, which a repeated
+        // position survives, so this compares the positions themselves, as
+        // BoardPosition values whose equality decides — a hash only buckets
+        // them. It pins the property a consumer choosing among positions
+        // relies on: no position is returned — and so weighted — twice.
         var distinct = new HashSet<BoardPosition>();
         foreach ((int index, int[] mop) in SyntheticPositions.Corpus(4_000).Index())
         {
             foreach ((int die1, int die2) in SyntheticPositions.AllRolls())
             {
-                var states = MoveGenerator.GenerateResultingStates(BoardState.FromMop(mop), die1, die2);
+                var positions = MoveGenerator.GenerateResultingPositions(BoardState.FromMop(mop), die1, die2);
 
                 distinct.Clear();
-                foreach (var s in states)
-                    distinct.Add(s.ToPosition());
+                foreach (var p in positions)
+                    distinct.Add(p);
 
-                Assert.True(distinct.Count == states.Count,
-                    $"Position {index} {die1}-{die2}: {states.Count} resulting boards " +
-                    $"collapse to {distinct.Count} distinct positions.");
+                Assert.True(distinct.Count == positions.Count,
+                    $"Position {index} {die1}-{die2}: {positions.Count} resulting positions " +
+                    $"collapse to {distinct.Count} distinct ones.");
             }
         }
+    }
+
+    [Theory]
+    [InlineData(6, 4)]
+    [InlineData(3, 3)]
+    public void GenerateResultingPositions_AllocatesOnlyItsList_NothingPerCandidate(int die1, int die2)
+    {
+        // The positions are values: the call allocates what GeneratePlays
+        // does plus the one BoardPosition array it returns, to the byte. A
+        // board built per candidate, or a position boxed, would show here.
+        var state = BoardState.Standard();
+        int count = MoveGenerator.GeneratePlays(state, die1, die2).Count;
+        Assert.True(count > 1);
+
+        long positions = AllocationProbe.SteadyStateBytes(() => _kept = MoveGenerator.GenerateResultingPositions(state, die1, die2));
+        long plays = AllocationProbe.SteadyStateBytes(() => _kept = MoveGenerator.GeneratePlays(state, die1, die2));
+        long array = AllocationProbe.SteadyStateBytes(() => _kept = new BoardPosition[count]);
+
+        Assert.Equal(plays + array, positions);
     }
 }
 
 public class GenerateCandidatePlaysTests
 {
+    // A sink the allocation pin's paths write, so no allocation can be elided.
+    private static object? _kept;
+
     [Fact]
-    public void GenerateCandidatePlays_PairsEachGeneratedPlayWithItsResultingState_AcrossSyntheticPositions()
+    public void GenerateCandidatePlays_PairsEachGeneratedPlayWithItsResultingPosition_AcrossSyntheticPositions()
     {
         // The association is the whole contract: candidate i carries
         // GeneratePlays' candidate i in the generator's own encoding (the
-        // identical moves, not merely the same play) and exactly the board
-        // GenerateResultingStates returns at i — which is that play applied.
+        // identical moves, not merely the same play) and exactly the position
+        // GenerateResultingPositions returns at i — which is that play applied.
         foreach ((int index, int[] mop) in SyntheticPositions.Corpus(1_000).Index())
         {
             foreach ((int die1, int die2) in SyntheticPositions.AllRolls())
             {
                 var state = BoardState.FromMop(mop);
                 var plays = MoveGenerator.GeneratePlays(state, die1, die2);
-                var boards = MoveGenerator.GenerateResultingStates(state, die1, die2);
+                var positions = MoveGenerator.GenerateResultingPositions(state, die1, die2);
                 var candidates = MoveGenerator.GenerateCandidatePlays(state, die1, die2);
 
                 Assert.Equal(plays.Count, candidates.Count);
@@ -652,59 +627,47 @@ public class GenerateCandidatePlaysTests
                 {
                     string where = $"Position {index} {die1}-{die2} candidate {i}";
                     Assert.True(plays[i].IsSameEncoding(candidates[i].Play), $"{where}: play is not the generator's encoding.");
-
-                    var expected = state.Copy();
-                    for (int j = 0; j < plays[i].Count; j++)
-                        expected.ApplyMove(plays[i][j]);
-
-                    Assert.True(expected.ToPosition() == candidates[i].ResultingState.ToPosition(),
-                        $"{where}: resulting state is not the play applied.");
-                    Assert.Equal(expected.HighPointOccupied, candidates[i].ResultingState.HighPointOccupied);
-                    Assert.True(boards[i].ToPosition() == candidates[i].ResultingState.ToPosition(),
-                        $"{where}: resulting state differs from GenerateResultingStates.");
+                    Assert.True(Replay.PositionAfter(state, plays[i]) == candidates[i].ResultingPosition,
+                        $"{where}: the resulting position is not the play applied.");
+                    Assert.True(positions[i] == candidates[i].ResultingPosition,
+                        $"{where}: the resulting position differs from GenerateResultingPositions.");
                 }
             }
         }
     }
 
     [Fact]
-    public void GenerateCandidatePlays_ResultingStatesAreInMoversFrame_NotFlipped()
+    public void GenerateCandidatePlays_ResultingPositionsAreInMoversFrame_NotFlipped()
     {
-        // Opening 3-1 cannot hit: every board keeps the opponent's stacks in
-        // place, and the 8/5 6/5 candidate carries the point-made board as
-        // the mover sees it.
+        // Opening 3-1 cannot hit: every position keeps the opponent's stacks
+        // in place, and the 8/5 6/5 candidate carries the point-made position
+        // as the mover sees it.
         var state = BoardState.Standard();
 
         var candidates = MoveGenerator.GenerateCandidatePlays(state, 3, 1);
 
         foreach (var c in candidates)
         {
-            Assert.Equal(-2, c.ResultingState.Points[1]);
-            Assert.Equal(-5, c.ResultingState.Points[12]);
-            Assert.Equal(-3, c.ResultingState.Points[17]);
-            Assert.Equal(-5, c.ResultingState.Points[19]);
+            Assert.Equal(-2, c.ResultingPosition[1]);
+            Assert.Equal(-5, c.ResultingPosition[12]);
+            Assert.Equal(-3, c.ResultingPosition[17]);
+            Assert.Equal(-5, c.ResultingPosition[19]);
         }
-
-        var pointMade = Boards.OpeningAfterMakingTheFivePoint();
 
         Play eightFiveSixFive = [new(8, 5), new(6, 5)];
         var makePoint = Assert.Single(candidates, c => state.IsSamePlay(c.Play, eightFiveSixFive));
-        Assert.Equal(pointMade.ToPosition(), makePoint.ResultingState.ToPosition());
+        Assert.Equal(Boards.OpeningAfterMakingTheFivePoint().ToPosition(), makePoint.ResultingPosition);
     }
 
     [Fact]
-    public void GenerateCandidatePlays_NoLegalMove_ReturnsSinglePassWithCopyOfInput()
+    public void GenerateCandidatePlays_NoLegalMove_ReturnsSinglePassWithTheInputPosition()
     {
         var state = Boards.ClosedOut();
 
-        var candidates = MoveGenerator.GenerateCandidatePlays(state, 6, 4);
+        var only = Assert.Single(MoveGenerator.GenerateCandidatePlays(state, 6, 4));
 
-        var only = Assert.Single(candidates);
         Assert.Equal(0, only.Play.Count);
-        Assert.NotSame(state, only.ResultingState);
-        Assert.False(state.Points.Overlaps(only.ResultingState.Points));
-        Assert.Equal(state.ToPosition(), only.ResultingState.ToPosition());
-        Assert.Equal(state.HighPointOccupied, only.ResultingState.HighPointOccupied);
+        Assert.Equal(state.ToPosition(), only.ResultingPosition);
     }
 
     [Theory]
@@ -714,46 +677,58 @@ public class GenerateCandidatePlaysTests
     public void GenerateCandidatePlays_DoesNotMutateInput(int die1, int die2)
     {
         var state = BoardState.Standard();
-        var original = state.Copy();
 
         MoveGenerator.GenerateCandidatePlays(state, die1, die2);
 
-        Assert.Equal(original.ToPosition(), state.ToPosition());
-        Assert.Equal(original.HighPointOccupied, state.HighPointOccupied);
+        Assert.Equal(BoardPosition.Standard, state.ToPosition());
+        Assert.Equal(BoardState.Standard().HighPointOccupied, state.HighPointOccupied);
+    }
+
+    [Theory]
+    [InlineData(6, 4)]
+    [InlineData(3, 3)]
+    public void GenerateCandidatePlays_AllocatesOnlyItsList_NothingPerCandidate(int die1, int die2)
+    {
+        // Candidates are values: the call allocates what GeneratePlays does
+        // plus the one CandidatePlay array it returns, to the byte.
+        var state = BoardState.Standard();
+        int count = MoveGenerator.GeneratePlays(state, die1, die2).Count;
+        Assert.True(count > 1);
+
+        long candidates = AllocationProbe.SteadyStateBytes(() => _kept = MoveGenerator.GenerateCandidatePlays(state, die1, die2));
+        long plays = AllocationProbe.SteadyStateBytes(() => _kept = MoveGenerator.GeneratePlays(state, die1, die2));
+        long array = AllocationProbe.SteadyStateBytes(() => _kept = new CandidatePlay[count]);
+
+        Assert.Equal(plays + array, candidates);
     }
 
     [Fact]
-    public void GenerateCandidatePlays_ResultingStatesAreIndependentCallerOwnedCopies()
+    public void CandidatePlay_IsAValueOnlyBgMoveGenBuilds_WithNoEquality()
     {
-        // Ownership, not immutability: scribbling on one candidate's board
-        // reaches neither the input, another candidate, nor a later call.
-        var state = BoardState.Standard();
-        var original = state.Copy();
+        // Construction: a readonly value type whose only constructor is
+        // internal, with get-only members — so a candidate a consumer holds is
+        // one the generator paired, or default, and nothing it does to what
+        // it reads reaches the pairing. Equality: none — it holds a Play,
+        // which has none (halheinrich/backgammon#273, ruling 1): no == to
+        // compile, and the runtime routes throw rather than compare the play
+        // field-wise.
+        var type = typeof(CandidatePlay);
+        Assert.True(type.IsValueType);
+        Assert.Contains(type.CustomAttributes,
+            a => a.AttributeType.FullName == "System.Runtime.CompilerServices.IsReadOnlyAttribute");
+        Assert.Empty(type.GetConstructors());
+        Assert.All(type.GetProperties(), p => Assert.Null(p.SetMethod));
 
-        var candidates = MoveGenerator.GenerateCandidatePlays(state, 6, 5);
-        Assert.True(candidates.Count > 1);
-        var snapshot = candidates.Select(c => c.ResultingState.Copy()).ToList();
+        CandidatePlay none = default;
+        Assert.Equal(0, none.Play.Count);
+        Assert.Equal(BoardPosition.Empty, none.ResultingPosition);
 
-        for (int i = 0; i < candidates.Count; i++)
-        {
-            Assert.False(state.Points.Overlaps(candidates[i].ResultingState.Points));
-            for (int j = i + 1; j < candidates.Count; j++)
-                Assert.False(candidates[i].ResultingState.Points.Overlaps(candidates[j].ResultingState.Points));
-        }
-
-        // The one whole-board write a caller has: every slot and the high
-        // point change at once.
-        candidates[0].ResultingState.SetPosition(BoardPosition.Empty);
-
-        Assert.Equal(original.ToPosition(), state.ToPosition());
-        Assert.Equal(original.HighPointOccupied, state.HighPointOccupied);
-        for (int i = 1; i < candidates.Count; i++)
-            Assert.Equal(snapshot[i].ToPosition(), candidates[i].ResultingState.ToPosition());
-
-        var again = MoveGenerator.GenerateCandidatePlays(state, 6, 5);
-        Assert.Equal(snapshot.Count, again.Count);
-        for (int i = 0; i < again.Count; i++)
-            Assert.Equal(snapshot[i].ToPosition(), again[i].ResultingState.ToPosition());
+        var candidate = MoveGenerator.GenerateCandidatePlays(BoardState.Standard(), 6, 4)[0];
+        Assert.Null(type.GetMethod("op_Equality"));
+        Assert.Null(type.GetMethod("op_Inequality"));
+        Assert.Throws<NotSupportedException>(() => candidate.Equals((object)candidate));
+        Assert.Throws<NotSupportedException>(() => candidate.GetHashCode());
+        Assert.Throws<NotSupportedException>(() => new HashSet<CandidatePlay> { candidate });
     }
 
     [Fact]
@@ -908,7 +883,7 @@ public class ArgumentValidationTests
     public static TheoryData<string> Entries =>
     [
         nameof(MoveGenerator.GeneratePlays),
-        nameof(MoveGenerator.GenerateResultingStates),
+        nameof(MoveGenerator.GenerateResultingPositions),
         nameof(MoveGenerator.GenerateCandidatePlays),
         nameof(MoveGenerator.GenerateSuccessors),
         nameof(MoveGenerator.IsLegalPlay),
@@ -962,7 +937,7 @@ public class ArgumentValidationTests
         switch (entry)
         {
             case nameof(MoveGenerator.GeneratePlays): return MoveGenerator.GeneratePlays(state!, die1, die2);
-            case nameof(MoveGenerator.GenerateResultingStates): return MoveGenerator.GenerateResultingStates(state!, die1, die2);
+            case nameof(MoveGenerator.GenerateResultingPositions): return MoveGenerator.GenerateResultingPositions(state!, die1, die2);
             case nameof(MoveGenerator.GenerateCandidatePlays): return MoveGenerator.GenerateCandidatePlays(state!, die1, die2);
             case nameof(MoveGenerator.GenerateSuccessors): return MoveGenerator.GenerateSuccessors(state!, die1, die2);
             case nameof(MoveGenerator.IsLegalPlay): return MoveGenerator.IsLegalPlay(state!, OpeningSixFour, die1, die2);

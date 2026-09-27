@@ -510,80 +510,77 @@ public static class MoveGenerator
     }
 
     /// <summary>
-    /// The distinct board positions reachable by a complete legal play of
+    /// The distinct positions reachable by a complete legal play of
     /// <paramref name="die1"/>, <paramref name="die2"/> from
     /// <paramref name="state"/> — for consumers that choose among resulting
     /// positions and need nothing of the plays that reach them.
     ///
     /// <para>
-    /// <b>Mover's frame.</b> Each board is the position immediately after the
+    /// <b>Mover's frame.</b> Each position is the one immediately after the
     /// mover's play, still from the mover's perspective: <i>no</i> flip is
-    /// applied. This differs from <see cref="BoardState.ApplyPlay"/> and from
-    /// the native <c>generate_successor_states</c> export, which both
-    /// re-express the board from the next mover's perspective.
+    /// applied. This differs from <see cref="BoardState.ApplyPlay"/>,
+    /// <see cref="GenerateSuccessors"/> and the native
+    /// <c>generate_successor_states</c> export, which re-express the position
+    /// from the next mover's perspective.
     /// </para>
     ///
     /// <para>
-    /// <b>Distinct by position.</b> One board per <see cref="GeneratePlays"/>
-    /// candidate, in candidate order, and no two boards are equal position for
-    /// position — a position reachable by several move sequences appears once,
-    /// so a consumer choosing among the results never weights one position
-    /// twice. <c>Count == 1</c> means "no choice". Pinned by
-    /// <c>GenerateResultingStates_BoardsAreDistinct_AcrossSyntheticPositions</c>
+    /// <b>Distinct by position.</b> One position per <see cref="GeneratePlays"/>
+    /// candidate, in candidate order, and no two are equal — a position
+    /// reachable by several move sequences appears once, so a consumer
+    /// choosing among the results never weights one position twice.
+    /// <c>Count == 1</c> means "no choice". Pinned by
+    /// <c>GenerateResultingPositions_AreDistinct_AcrossSyntheticPositions</c>
     /// (4,000 positions × 21 rolls) in <c>MoveGeneratorTests</c>.
     /// </para>
     ///
     /// <para>
     /// <b>No legal move.</b> A dance / closed-out position yields exactly one
-    /// board equal to <paramref name="state"/> — never an empty list, and never
-    /// <paramref name="state"/> itself.
+    /// position, equal to <paramref name="state"/>'s — never an empty list.
     /// </para>
     ///
     /// <para>
-    /// <b>Ownership.</b> The list is fully built before this method returns.
-    /// <paramref name="state"/> is left unchanged, and every returned
-    /// <see cref="BoardState"/> is an independent copy owned by the caller —
-    /// sharing no storage with <paramref name="state"/>, with another result,
-    /// or with anything BgMoveGen retains. The list interface is read-only;
-    /// the boards themselves are ordinary mutable <see cref="BoardState"/>s.
+    /// <b>Values.</b> Each is a <see cref="BoardPosition"/>, which can be read
+    /// and never written, so the list is one array and no board is built. The
+    /// list is complete before the method returns, and
+    /// <paramref name="state"/> is left unchanged.
     /// </para>
     /// </summary>
     /// <inheritdoc cref="GeneratePlays(BoardState, int, int)" path="/exception"/>
-    public static IReadOnlyList<BoardState> GenerateResultingStates(BoardState state, int die1, int die2)
+    public static IReadOnlyList<BoardPosition> GenerateResultingPositions(BoardState state, int die1, int die2)
     {
         var plays = GeneratePlays(state, die1, die2);
-        var states = new BoardState[plays.Count];
+        var positions = new BoardPosition[plays.Count];
         for (int p = 0; p < plays.Count; p++)
-            states[p] = ResultingStateOf(state, plays[p]);
-        return states;
+            positions[p] = ResultingPositionOf(state, plays[p]);
+        return positions;
     }
 
     /// <summary>
     /// Every legal candidate for a roll, each pairing the generator's
-    /// <see cref="Play"/> with the board that play produces — for consumers
+    /// <see cref="Play"/> with the position that play reaches — for consumers
     /// that choose among resulting positions and must also report the play
     /// that reaches the chosen one.
     ///
     /// <para>
     /// <b>One call, one association.</b> Candidate <c>i</c> holds
     /// <see cref="GeneratePlays"/>' candidate <c>i</c>, in the generator's own
-    /// encoding and in candidate order, and the board that play reaches — the
-    /// board <see cref="GenerateResultingStates"/> returns at the same index,
-    /// built by the same routine. Consumers never zip the two lists
-    /// themselves, and move generation runs once.
+    /// encoding and in candidate order, and the position that play reaches —
+    /// the position <see cref="GenerateResultingPositions"/> returns at the
+    /// same index, computed by the same rule. Consumers never zip the two
+    /// lists themselves, and move generation runs once.
     /// </para>
     ///
     /// <para>
-    /// Every other guarantee is <see cref="GenerateResultingStates"/>'s, with
-    /// the same meaning: <b>mover's frame</b> (no flip); boards distinct by
-    /// position, so the plays are distinct candidates and <c>Count == 1</c>
+    /// Every other guarantee is <see cref="GenerateResultingPositions"/>'s,
+    /// with the same meaning: <b>mover's frame</b> (no flip); positions
+    /// distinct, so the plays are distinct candidates and <c>Count == 1</c>
     /// means "no choice"; a no-legal-move position yields one candidate holding
-    /// the empty play and a board equal to — never the same object as —
-    /// <paramref name="state"/>; the list is fully built before return;
-    /// <paramref name="state"/> is left unchanged; and every
-    /// <see cref="CandidatePlay.ResultingState"/> is an independent copy owned
-    /// by the caller, sharing no storage with <paramref name="state"/> or with
-    /// another candidate.
+    /// the empty play and <paramref name="state"/>'s position; the list is
+    /// complete before return; and <paramref name="state"/> is left unchanged.
+    /// A <see cref="CandidatePlay"/> is a value holding its play and its
+    /// position inline — the list is one array, and no caller can break the
+    /// pairing (see the type).
     /// </para>
     ///
     /// <para>
@@ -597,7 +594,7 @@ public static class MoveGenerator
         var plays = GeneratePlays(state, die1, die2);
         var candidates = new CandidatePlay[plays.Count];
         for (int p = 0; p < plays.Count; p++)
-            candidates[p] = new CandidatePlay(plays[p], ResultingStateOf(state, plays[p]));
+            candidates[p] = new CandidatePlay(plays[p], ResultingPositionOf(state, plays[p]));
         return candidates;
     }
 
@@ -613,7 +610,7 @@ public static class MoveGenerator
     /// <see cref="BoardState.ApplyPlay"/> leaves, as a value, and the board the
     /// native <c>generate_successor_states</c> writes, which computes it by the
     /// same rule. This is the counterpart of
-    /// <see cref="GenerateResultingStates"/> and
+    /// <see cref="GenerateResultingPositions"/> and
     /// <see cref="GenerateCandidatePlays"/>, which stay in the mover's frame.
     /// </para>
     ///
@@ -656,15 +653,6 @@ public static class MoveGenerator
     /// </summary>
     internal static BoardPosition SuccessorPositionOf(BoardState state, in Play play)
         => ResultingPositionOf(state, in play).Flipped();
-
-    /// <summary>
-    /// The board behind <see cref="GenerateResultingStates"/> and
-    /// <see cref="GenerateCandidatePlays"/>: a new board holding the position
-    /// <paramref name="play"/> reaches (<see cref="ResultingPositionOf"/>), in
-    /// the mover's frame. <paramref name="state"/> is left unchanged.
-    /// </summary>
-    private static BoardState ResultingStateOf(BoardState state, in Play play)
-        => new(ResultingPositionOf(state, in play));
 
     /// <summary>
     /// The position a generated <paramref name="play"/> reaches from

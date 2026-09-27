@@ -45,10 +45,11 @@ single-file analyzers run in its build — a declaration
 assembly (halheinrich/backgammon#228). Three areas:
 
 - **Generation** — `MoveGenerator`. Public: `GeneratePlays`, the
-  resulting-position view `GenerateResultingStates`, the paired view
-  `GenerateCandidatePlays` (each `Play` with its resulting board, as a
-  `CandidatePlay`), the successor view `GenerateSuccessors` (each `Play`
-  with the position it leaves the next mover, as a `Successor` value), and
+  resulting-position view `GenerateResultingPositions` (`BoardPosition`
+  values), the paired view `GenerateCandidatePlays` (each `Play` with the
+  position it reaches, as a `CandidatePlay` value), the successor view
+  `GenerateSuccessors` (each `Play` with the position it leaves the next
+  mover, as a `Successor` value), and
   the validating turn-boundary pair `IsLegalPlay` / `ApplyPlay`. Internal:
   the single-move primitives `NextMove` and `SingleMoves`
   (`Span` and `List` overloads), the two optimized paths `GenerateDoubles` /
@@ -240,8 +241,9 @@ board comparisons. There is no board hash of this library's own. The
 position a generated play reaches is computed in one place,
 `MoveGenerator.ResultingPositionOf`: the play's moves applied with the raw
 pair, the position taken as a value (`ToPosition`), the moves undone —
-allocation-free, and the input left as it was. The candidate views build
-their boards from it, and the reference and `MoveEntryState` key on it.
+allocation-free, and the input left as it was. The candidate views hand out
+its values (the successor view flips them first), and the reference and
+`MoveEntryState` key on it.
 The hot path's own dedup is unaffected: `GeneratePlays` avoids duplicates
 by construction (ordered doubles, avoidance for non-doubles) and compares
 no positions at all.
@@ -328,10 +330,10 @@ pip-floor retry loop). BgMoveGen exposes it through the
   asked through the list match `IndexOfSamePlay`). The two are complements:
   the first only ever notices too few candidates, the second only ever
   notices too many. A third,
-  `GenerateResultingStates_BoardsAreDistinct_AcrossSyntheticPositions`,
-  compares the boards `GenerateResultingStates` returns: the reference sweep
-  compares board *sets*, which a repeated board survives, so board
-  distinctness is compared position for position, never by hash.
+  `GenerateResultingPositions_AreDistinct_AcrossSyntheticPositions`,
+  compares the positions `GenerateResultingPositions` returns: the
+  reference sweep compares position *sets*, which a repeated position
+  survives, so distinctness is compared value by value, never by hash.
 - `GeneratePlays_HoldsExactlyOnePlayPerLegalPosition_AcrossSyntheticPositions`
   — the pin on the generator's promise of one play per resulting position
   (halheinrich/backgammon#279, restated for position identity). On the
@@ -348,12 +350,14 @@ pip-floor retry loop). BgMoveGen exposes it through the
   sweep does not already pin.
 - Test categories: apply/undo round-trip; single-move generation (bar
   entry, regular, bear-off exact and overshoot, ordering); reference
-  correctness; `GenerateResultingStates` contract (final boards of the
-  candidates, mover's frame, no-legal-move copy, input untouched,
-  caller-owned copies, board distinctness); `GenerateCandidatePlays`
-  association (each candidate is the generator's play `i` in raw encoding
-  and `GenerateResultingStates`' board `i`, plus the same frame / pass /
-  input / ownership pins, and `Play` returned by value); `IsLegalPlay` /
+  correctness; `GenerateResultingPositions` contract (the candidates'
+  final positions in candidate order, mover's frame, the pass's position,
+  input untouched, distinct positions, nothing allocated per candidate);
+  `GenerateCandidatePlays` association (each candidate is the generator's
+  play `i` in raw encoding and `GenerateResultingPositions`' position `i`,
+  plus the same frame / pass / input / allocation pins, `Play` returned by
+  value, and `CandidatePlay`'s construction and missing equality);
+  `IsLegalPlay` /
   `ApplyPlay` validation contract (legality round-trip, illegal-input
   throw, throw-before-mutate state preservation, dice-order invariance,
   closed-out empty-pass case, rejection of a hit mark disagreeing with the
@@ -476,12 +480,12 @@ of the suite.
 // Full play enumeration — for clients that need to animate or record moves.
 List<Play> plays = MoveGenerator.GeneratePlays(state, die1, die2);
 
-// Distinct positions after the mover's play, in the mover's frame (no flip).
-IReadOnlyList<BoardState> boards = MoveGenerator.GenerateResultingStates(state, die1, die2);
+// Distinct positions after the mover's play, in the mover's frame (no flip), as values.
+IReadOnlyList<BoardPosition> positions = MoveGenerator.GenerateResultingPositions(state, die1, die2);
 
-// The same boards, each paired with the play that reaches it.
+// The same positions, each paired with the play that reaches it, as values.
 IReadOnlyList<CandidatePlay> candidates = MoveGenerator.GenerateCandidatePlays(state, die1, die2);
-// candidates[i].Play, candidates[i].ResultingState
+// candidates[i].Play, candidates[i].ResultingPosition
 
 // Each play with its successor: the position it leaves the next mover (flipped), as values.
 IReadOnlyList<Successor> successors = MoveGenerator.GenerateSuccessors(state, die1, die2);
@@ -507,31 +511,39 @@ the board unchanged; their doc comments inherit the `<exception>` entries
 from `GeneratePlays` rather than restate them. The cost is a null check and
 the roll's two face checks per call.
 
-`GenerateResultingStates` is the position-level view of the same candidate
-list, for consumers that choose among resulting positions and need nothing
-of the plays. One board per candidate,
-in candidate order, each the input with that play applied and **not
-flipped** — the mover's frame, unlike `BoardState.ApplyPlay` and the native
-`generate_successor_states`. No two boards are equal position for position,
-so no position is weighted twice; a pass yields one board equal to the
-input. The list is complete before the method returns, the input is
-untouched, and every board is an independent caller-owned copy — the list
-interface is read-only, the `BoardState`s are ordinary mutable boards.
+**Every candidate view hands out values** (Hal's ruling of 2026-09-26,
+halheinrich/backgammon#273): positions as `BoardPosition`, pairs as value
+types, and no board is built for a caller to own or change.
+
+`GenerateResultingPositions` is the position-level view of the same
+candidate list, for consumers that choose among resulting positions and
+need nothing of the plays. One `BoardPosition` per candidate, in candidate
+order, each the input with that play applied and **not flipped** — the
+mover's frame, unlike `BoardState.ApplyPlay`, `GenerateSuccessors` and the
+native `generate_successor_states`. No two are equal, so no position is
+weighted twice; a pass yields one position, the input's. The list is
+complete before the method returns, the input is untouched, and the list is
+one array — nothing is allocated per candidate. (It was
+`GenerateResultingStates`, handing out a new `BoardState` per candidate;
+the name follows the type.)
 
 `GenerateCandidatePlays` returns the same candidates with the association
 made explicit, for consumers that choose among resulting positions and must
 report the play reaching the chosen one: candidate `i` is `GeneratePlays`'
-play `i` (the generator's own encoding) and the board
-`GenerateResultingStates` returns at `i`. Every guarantee above carries
-over. Both methods build each board from the position the play reaches,
-computed by one routine, `ResultingPositionOf` — the single source of the
-play → position rule — so the two views cannot drift apart. `CandidatePlay` is a sealed class with an
-internal constructor: only BgMoveGen pairs a play with a board, and there
-is no `default` instance with a null board. It defines no value equality.
-`Play` is returned by value, so its stored copy cannot be modified;
-`ResultingState` is the caller's own mutable board, and mutating it breaks
-the association. Choosing among candidates, and breaking ties, is the
-consumer's decision.
+play `i` (the generator's own encoding) and the position
+`GenerateResultingPositions` returns at `i`. Every guarantee above carries
+over. Both compute each position by one routine, `ResultingPositionOf` —
+the single source of the play → position rule — so the two views cannot
+drift apart. `CandidatePlay` has `Successor`'s shape, for the same reasons:
+a `readonly struct` holding its `Play` and its `ResultingPosition` inline,
+so the list is one array and nothing a caller does to what it reads can
+break the pairing; an internal constructor, so only BgMoveGen pairs a play
+with its position (`default` is the empty play with the empty position);
+and no equality — it holds a `Play` — so `==` is not defined and `Equals`
+and `GetHashCode` throw; compare positions with
+`a.ResultingPosition == b.ResultingPosition`. The two types stay separate
+because they state different frames. Choosing among candidates, and
+breaking ties, is the consumer's decision.
 
 `GenerateSuccessors` is the counterpart in the next mover's frame
 (halheinrich/backgammon#243), for consumers that choose a play by
@@ -654,7 +666,8 @@ int get_version();
 - **No-legal-move returns a pass, not an empty list.** For a dance /
   closed-out position, `GeneratePlays` returns a one-element list holding the
   empty pass `Play` (`Count == 0`) — never `Count == 0` on the list itself.
-  `GenerateResultingStates` inherits this (one board, equal to the input). Consumers must handle a single "pass" candidate, not an
+  The views inherit this (`GenerateResultingPositions`: one position, the
+  input's). Consumers must handle a single "pass" candidate, not an
   empty collection; the C interop mirrors it (successor count always `>= 1`).
 - **Bearing-off overshoot.** Legal only from the highest occupied point in
   the home board (`HighPointOccupied`). The die must exceed `FrPt` *and*
@@ -714,8 +727,9 @@ int get_version();
   internalizing the class, republishing the NativeAOT DLL, and running
   BgRLEngine's pytest (green). Keep the surface `internal`; nothing about
   the native path needs it public.
-- **`GenerateResultingStates` is not a successor generator.** Its boards
-  are in the mover's frame; a consumer that needs the next mover's
+- **`GenerateResultingPositions` is not a successor generator.** Its
+  positions (and `CandidatePlay.ResultingPosition`) are in the mover's
+  frame; a consumer that needs the next mover's
   perspective uses `GenerateSuccessors`, which flips — as the native
   `generate_successor_states` does, by the same rule. Don't "fix" either
   frame to match the other, and don't flip in a consumer: the flip is
