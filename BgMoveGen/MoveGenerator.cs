@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using BgDataTypes_Lib;
 
 namespace BgMoveGen;
@@ -741,6 +742,241 @@ public static class MoveGenerator
                 $"Play is not legal for the given state and dice ({die1}, {die2}).",
                 nameof(play));
         state.ApplyPlay(play);
+    }
+
+    /// <summary>
+    /// The legal play <paramref name="hops"/> describe, as the generator's own
+    /// candidate — or <see langword="null"/> when they describe none. For a
+    /// caller that receives a play as mark-free single-die hops in no
+    /// particular order (a wire protocol, a typed-in play) and must apply and
+    /// record the legal play they stand for: the batch form of the question
+    /// <see cref="MoveEntryState"/> answers one click at a time.
+    ///
+    /// <para>
+    /// <b>The hops must be a legal play's single-die moves.</b> They resolve
+    /// to one of <see cref="GeneratePlays"/>' candidates when some order of
+    /// them, with some assignment of the roll's dice — each die of a
+    /// non-double once, a double's die once per move — makes each hop a legal
+    /// single-die move, the generator's own, from the position the hops before
+    /// it leave, and the play they then form is the same play as that
+    /// candidate (<see cref="BoardState.IsSamePlay"/>). So every order of a
+    /// legal play's hops resolves, and so does a route the generator did not
+    /// keep: it keeps one play per resulting position, <c>13/11 11/8</c> with
+    /// 3-2 say, and <c>13/10 10/8</c> reaches the same position. Hops no die of
+    /// the roll produces (<c>13/9 9/6</c> with 6-1), a merged hop covering two
+    /// dice (<c>13/8</c> with 3-2), and more or fewer hops than every legal
+    /// play of the roll makes, resolve to <see langword="null"/>. So do hops
+    /// that reach a candidate's position without being its single-die moves
+    /// (<c>3/off</c> with 5-1 from a lone checker on the 3-point, where the 1
+    /// must be played too): reaching the position is play identity, not a
+    /// play of the roll.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Hits come from the board.</b> A <see cref="Hop"/> cannot carry a hit
+    /// mark. Each hop hits exactly when the generator's single move it plays
+    /// does, as the board stands when it is played; the legality and hit
+    /// rules are the generator's and <see cref="BoardState"/>'s, and nothing
+    /// here restates them.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>The pass.</b> No hops describe the pass: an empty list resolves to
+    /// the empty play exactly when passing is the only legal play, and to
+    /// <see langword="null"/> otherwise.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>The answer is the generator's candidate</b>, never a play assembled
+    /// from the hops: whatever route or order the hops take, the play returned
+    /// is the element of <see cref="GeneratePlays"/>' list, in its encoding
+    /// and with its hit marks, so a caller applies and records the play the
+    /// generator lists. At most one candidate answers. The points the hops hit
+    /// and the position they reach depend only on the set of hops, since no
+    /// opposing checker moves during the mover's turn except to the bar, and
+    /// the generator lists one play per position. Hops that realized two
+    /// different candidates would break both, and throw
+    /// <see cref="UnreachableException"/> naming them rather than choose one.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Refusal.</b> A null <paramref name="hops"/> is refused before
+    /// anything runs, and the state and the dice are refused as
+    /// <see cref="GeneratePlays"/> refuses them. Hops that describe no legal
+    /// play are an answer, <see langword="null"/>, never an exception.
+    /// <paramref name="state"/> is only read.
+    /// </para>
+    ///
+    /// <para>
+    /// Re-runs <see cref="GeneratePlays"/>, as <see cref="IsLegalPlay"/> does:
+    /// a turn-boundary operation, not a hot-path primitive.
+    /// </para>
+    /// </summary>
+    /// <param name="state">The position the play is made from, in the mover's frame.</param>
+    /// <param name="hops">The play's single-die hops, in any order; none for a pass.</param>
+    /// <param name="die1">One die rolled, 1–6.</param>
+    /// <param name="die2">The other die rolled, 1–6.</param>
+    /// <returns>
+    /// The candidate <paramref name="hops"/> describe, in the generator's
+    /// encoding; <see langword="null"/> when they describe no legal play.
+    /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="hops"/> is null.</exception>
+    /// <inheritdoc cref="GeneratePlays(BoardState, int, int)" path="/exception"/>
+    public static Play? ResolvePlay(BoardState state, IReadOnlyList<Hop> hops, int die1, int die2)
+    {
+        ArgumentNullException.ThrowIfNull(hops);
+        var candidates = GeneratePlays(state, die1, die2);
+
+        // Every candidate plays as many dice as the roll allows, so a legal
+        // play's single-die hops number exactly that.
+        int moves = candidates[0].Count;
+        if (hops.Count != moves)
+            return null;
+
+        // The roll's dice, to assign to the hops: a double's die once per
+        // move, a non-double's two dice once each.
+        var roll = new DiceRoll(die1, die2);
+        int[] dice;
+        if (roll.IsDouble)
+        {
+            dice = new int[moves];
+            Array.Fill(dice, roll.High);
+        }
+        else
+        {
+            dice = [roll.Low, roll.High];
+        }
+
+        int found = -1;
+        foreach (var sequence in LegalSequencesOfHops(state, hops, dice))
+        {
+            if (found < 0)
+            {
+                // The list match, until a sequence is the same play as a
+                // candidate. It can be none: a lone smaller die where the
+                // rule on the whole play demands the larger.
+                found = state.IndexOfSamePlay(sequence, candidates);
+                continue;
+            }
+
+            // Then every other sequence of these hops is the same play as
+            // that candidate, one comparison each, unless the hops realize a
+            // second candidate — and choosing either would be a guess.
+            if (state.IsSamePlay(sequence, candidates[found]))
+                continue;
+            int other = state.IndexOfSamePlay(sequence, candidates);
+            if (other >= 0)
+                throw new UnreachableException(
+                    $"The hops {string.Join(", ", hops)} with {die1}-{die2} from {state.ToPosition()} " +
+                    $"realize two generated candidates, {candidates[found].ToNotation()} and " +
+                    $"{candidates[other].ToNotation()}. The position a set of hops reaches depends only " +
+                    "on the set, and the generator lists one play per position, so this is a defect in BgMoveGen.");
+        }
+
+        return found < 0 ? null : candidates[found];
+    }
+
+    /// <summary>
+    /// Every way to play <paramref name="hops"/> as legal single-die moves
+    /// from <paramref name="state"/>: an order of the hops and a die of
+    /// <paramref name="dice"/> for each, each die used once, where each hop is
+    /// the generator's single move for its die from the position the hops
+    /// before it leave (<see cref="GeneratedMoveFor"/>). Each way comes back
+    /// as the sequence of those moves — the generator's own, so each carries
+    /// the hit mark the board gives it. Equal hops and equal dice are tried
+    /// once per step, so trading two identical hops or dice does not return a
+    /// way twice. The search runs on a copy; <paramref name="state"/> is only
+    /// read.
+    /// </summary>
+    private static List<Play> LegalSequencesOfHops(BoardState state, IReadOnlyList<Hop> hops, int[] dice)
+    {
+        var sequences = new List<Play>();
+        var sequence = new Play();
+        ExtendSequence(state.Copy(), hops, dice, hopsPlayed: 0, diceUsed: 0, ref sequence, sequences);
+        return sequences;
+    }
+
+    /// <summary>
+    /// One step of <see cref="LegalSequencesOfHops"/>: every hop not yet
+    /// played, with every die not yet used, that is a legal single move from
+    /// <paramref name="board"/> as it stands, played and then extended.
+    /// <paramref name="hopsPlayed"/> and <paramref name="diceUsed"/> are bit
+    /// sets over the indices of <paramref name="hops"/> and
+    /// <paramref name="dice"/>. <paramref name="board"/> and
+    /// <paramref name="sequence"/> are restored before returning.
+    /// </summary>
+    private static void ExtendSequence(
+        BoardState board, IReadOnlyList<Hop> hops, int[] dice,
+        int hopsPlayed, int diceUsed, ref Play sequence, List<Play> sequences)
+    {
+        if (sequence.Count == hops.Count)
+        {
+            sequences.Add(sequence.Snapshot());
+            return;
+        }
+
+        Span<Move> buffer = stackalloc Move[30];
+        for (int h = 0; h < hops.Count; h++)
+        {
+            if (!IsFirstFree(hops, hopsPlayed, h))
+                continue;
+            for (int d = 0; d < dice.Length; d++)
+            {
+                if (!IsFirstFree(dice, diceUsed, d)
+                    || !GeneratedMoveFor(board, hops[h], dice[d], buffer, out Move move))
+                    continue;
+
+                board.ApplyMove(move);
+                sequence.Add(move);
+                ExtendSequence(board, hops, dice, hopsPlayed | (1 << h), diceUsed | (1 << d), ref sequence, sequences);
+                sequence.RemoveLast();
+                board.UndoMove(move);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether entry <paramref name="index"/> of <paramref name="items"/> is
+    /// not yet in <paramref name="taken"/> (a bit set over the indices) and
+    /// no earlier entry equal to it is still free — so of equal free entries
+    /// only the first is tried.
+    /// </summary>
+    private static bool IsFirstFree<T>(IReadOnlyList<T> items, int taken, int index)
+        where T : IEquatable<T>
+    {
+        if ((taken & (1 << index)) != 0)
+            return false;
+        for (int i = 0; i < index; i++)
+        {
+            if ((taken & (1 << i)) == 0 && items[i].Equals(items[index]))
+                return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// The generator's legal single move for <paramref name="die"/> from
+    /// <paramref name="board"/> that <paramref name="hop"/> describes
+    /// (<see cref="Hop.Describes"/>), when there is one: of the moves
+    /// <see cref="SingleMoves(BoardState, int, Span{Move})"/> offers, the one
+    /// from the hop's source to its landing point. A die moves a checker from
+    /// a given point one way, so there is at most one. The move carries the
+    /// hit mark the board gives it. <paramref name="buffer"/> is working
+    /// space.
+    /// </summary>
+    private static bool GeneratedMoveFor(BoardState board, Hop hop, int die, Span<Move> buffer, out Move move)
+    {
+        int count = SingleMoves(board, die, buffer);
+        for (int i = 0; i < count; i++)
+        {
+            if (hop.Describes(buffer[i]))
+            {
+                move = buffer[i];
+                return true;
+            }
+        }
+        move = default;
+        return false;
     }
 
     // ── Reference implementation (brute-force, obviously correct) ──

@@ -53,12 +53,15 @@ assembly (halheinrich/backgammon#228). Three areas:
   values), the paired view `GenerateCandidatePlays` (each `Play` with the
   position it reaches, as a `CandidatePlay` value), the successor view
   `GenerateSuccessors` (each `Play` with the position it leaves the next
-  mover, as a `Successor` value), and
-  the validating turn-boundary pair `IsLegalPlay` / `ApplyPlay`. Internal:
+  mover, as a `Successor` value),
+  the validating turn-boundary pair `IsLegalPlay` / `ApplyPlay`, and
+  `ResolvePlay`, which resolves a play's mark-free single-die hops (`Hop`
+  values) to the legal candidate they describe. Internal:
   the single-move primitives `NextMove` and `SingleMoves`
   (`Span` and `List` overloads), the two optimized paths `GenerateDoubles` /
   `GenerateNonDoubles`, the play → position rule `ResultingPositionOf` and
-  the successor rule `SuccessorPositionOf` built on it, and
+  the successor rule `SuccessorPositionOf` built on it, the hop search
+  behind `ResolvePlay` (`LegalSequencesOfHops`), and
   `Reference_GeneratePlays` over `Reference_LegalSequences`, the brute-force
   ground truth the tests hold them to.
 - **Click entry** — `MoveEntryState`: stateful one-click `Play` assembly
@@ -235,6 +238,68 @@ keyed by `BoardPosition`, BgDataTypes_Lib's one "same position", whose
 equality decides (a hash only buckets), and each is computed by the
 generator's `ResultingPositionOf` — see "One same position" below.
 
+### ResolvePlay — mark-free hops, resolved Strictly
+
+`MoveGenerator.ResolvePlay(state, hops, die1, die2)` asks for a whole play
+at once what `MoveEntryState` asks one click at a time: given a position, a
+roll, and a play's single-die hops with no hit marks and in no order,
+which of `GeneratePlays`' candidates do they describe — or none. It is
+protocol-independent; BgTournament's wire resolution is the consumer it was
+built for (halheinrich/backgammon#304). Its semantics are the Strict model
+Hal adopted on 2026-09-28 (halheinrich/backgammon#273, rulings A–C): the
+hops resolve to a candidate when some order of them, with some assignment
+of the roll's dice, makes each hop a legal single-die move from the
+position the earlier hops leave, and the play they then form is the same
+play as that candidate. The method's doc comment is the contract. The
+design points:
+
+- **Neither older answer is it.** Matching the hops against the
+  candidates' own moves (a hop-list key) fails a legal play sent by the
+  route the generator did not keep: it keeps one play per position, so
+  `13/10 10/8*` matches nothing where it kept `13/11 11/8*`. Play identity
+  (`IsLegalPlay`) accepts too much: `13/9 9/6` with 6-1, or the merged
+  `13/8` with 3-2, reaches a candidate's position and so is the same play,
+  though no die of the roll makes those hops. Strict needs both halves:
+  each hop a die's legal move, and the whole the same play as a candidate.
+- **One legality rule, one identity.** Each hop is matched to the
+  generator's own single move for a die (`SingleMoves`, read through
+  `Hop.Describes`), so entering first, blocked points, the bear-off
+  conditions and the hit all come from the generator and the board, never
+  from the input. A complete sequence of those moves carries the board's
+  hit marks and is matched to the candidates by BgDataTypes_Lib's list
+  match, `IndexOfSamePlay`: "the same play" is `BoardState.IsSamePlay`'s,
+  and there is no hop-list key. The rule on the whole play — as many dice
+  as can be played, the larger when only one can — is the candidates': the
+  hops must number the moves every candidate makes, and a lone smaller die
+  where the larger can be played is the same play as no candidate. The
+  count is also what refuses `3/off` with 5-1 from a lone checker on the
+  3-point: it reaches the one candidate's position, but the candidate is
+  `3/2 2/off`, two dice.
+- **The answer is the candidate**, the element of `GeneratePlays`' list in
+  its encoding and with its hit marks, never a play spelled from the hops:
+  BgTournament applies and records the generator's candidate (ruling B).
+- **At most one answer.** During the mover's turn no opposing checker
+  moves except to the bar, so the points a set of hops hits and the
+  position it reaches depend only on the set; with one play per position,
+  every working order and die assignment lands on one candidate. The code
+  checks it rather than assume it — hops realizing two candidates throw
+  `UnreachableException` instead of choosing — and the reference sweep
+  (see Validation) walks every legal sequence of its sample for a
+  counterexample.
+- **The input cannot express a hit mark** (ruling C). `Hop` is a
+  `readonly record struct` of a source (1–24, or 25 the bar) and a landing
+  point (1–24, or 0 off), refused out of range by its constructor, with
+  `TryCreate` the non-throwing door for outside data. `Move` marks a hit by
+  negating its landing point; a hop's landing point cannot be negative, and
+  the hop has no other member. Its equality is its two points — hop equality, never
+  play identity. It is a type of this library because the operation that
+  reads it is.
+- **Cost.** It re-runs `GeneratePlays`, as `IsLegalPlay` does: a
+  turn-boundary operation. The search runs on a copy of the board over at
+  most every order of four hops, trying equal hops and equal dice once;
+  after the first match, each further sequence costs one `IsSamePlay`
+  rather than a list match.
+
 ### One same position
 
 Every question of "is this the same position" in this library is asked of
@@ -352,6 +417,20 @@ pip-floor retry loop). BgMoveGen exposes it through the
   asking the list match per sequence costs one rule evaluation per
   candidate — minutes in a Debug run — and adds nothing the distinct-plays
   sweep does not already pin.
+- `ResolvePlay_AgreesWithTheLegalSequences_AcrossSyntheticPositions` —
+  the Strict model against the reference. On the corpus's first 1,000
+  positions and all 21 rolls, every legal single-die sequence
+  (`Reference_LegalSequences`), its marks set aside, is a hop set that
+  should resolve, and no hop set may belong to sequences reaching two
+  candidates — the at-most-one premise, checked over every sequence.
+  Resolution is checked on an evenly spaced sample of each position-roll's
+  hop sets, every one when there are fewer than 32: each resolves, in its
+  sequence's order and reversed, to its candidate, and each near miss (one
+  landing point moved one point) resolves exactly when it is itself a
+  legal hop set. The sample bounds a cost quadratic in the candidates,
+  since each resolution re-runs the generator; measured when the sweep was
+  written, resolving every hop set took about 20 s a Release run, the
+  sample 3 s.
 - Test categories: apply/undo round-trip; single-move generation (bar
   entry, regular, bear-off exact and overshoot, ordering); reference
   correctness; `GenerateResultingPositions` contract (the candidates'
@@ -369,7 +448,18 @@ pip-floor retry loop). BgMoveGen exposes it through the
   differently, the hit marked on either checker — and the candidate's board
   reached from each, rejection of a decomposition through a blocked point,
   candidates distinct as plays on the opening board, on the two-die
-  bear-off, and across the synthetic corpus); performance benchmarks;
+  bear-off, and across the synthetic corpus); `ResolvePlay` contract (either
+  route of a hitting play, in either order, resolving to the one candidate
+  with its hit; the roll's own hops resolving and hops no die makes not; a
+  merged hop, a merged hop among a double's four, hops short of the dice,
+  and a lone smaller die resolving to none though some are the same play;
+  every order of every opening-board candidate's hops; a double played in
+  part; entering from the bar; bearing off by a larger die, and not past a
+  higher checker; the pass; well-formed hops that are no play; the input
+  untouched; a null list refused); `Hop` (construction and `TryCreate`
+  across the range, no hit mark writable and no member to carry one,
+  equality and deconstruction, the moves a hop describes); performance
+  benchmarks;
   `GenerateSuccessors` contract (play `i` by encoding, the board
   `ApplyPlay` leaves, distinct positions, the pass flipped, input
   untouched, no allocation per successor, and `Successor`'s construction
@@ -499,6 +589,9 @@ IReadOnlyList<Successor> successors = MoveGenerator.GenerateSuccessors(state, di
 // Validating turn-boundary primitives.
 bool legal = MoveGenerator.IsLegalPlay(state, play, die1, die2);
 MoveGenerator.ApplyPlay(state, play, die1, die2);   // throws on illegal play
+
+// The legal play a play's mark-free single-die hops describe, as the generator's candidate; null for none.
+Play? resolved = MoveGenerator.ResolvePlay(state, [new Hop(13, 10), new Hop(10, 8)], die1, die2);
 ```
 
 `GeneratePlays` enforces must-use-both-dice and must-use-larger-die. A
@@ -511,7 +604,9 @@ a null state throws `ArgumentNullException`, and a die outside 1–6
 BgDataTypes_Lib `DiceRoll`, whose constructor owns the die-face rule, and
 the generator reads the roll's canonical high and low. Every other public
 member reaches `GeneratePlays` before touching its board, so each refuses
-the same arguments the same way, with the board unchanged.
+the same arguments the same way, with the board unchanged. `ResolvePlay`
+also refuses a null `hops` list, with `ArgumentNullException`, before
+anything runs.
 `MoveEntryState`'s constructor takes its start as a `BoardPosition` value,
 which cannot be null, and refuses a die outside 1–6 the same way, through
 `GeneratePlays`. Their doc comments inherit the `<exception>` entries from
@@ -586,6 +681,23 @@ match it applies the caller's play, which reaches the candidate's board
 (see Architecture); on rejection, the input state is unchanged. The
 unvalidated form (`state.ApplyPlay(play)`) remains available.
 
+`ResolvePlay` resolves a play received as mark-free single-die hops — a
+wire protocol's reply, a typed-in play — to the candidate they describe:
+some order of the hops, with the roll's dice, must be legal single-die
+moves forming the same play as a candidate. It returns that candidate
+itself (`GeneratePlays`' element, in its encoding, hit marks included), or
+`null` when the hops describe no play of the roll; well-formed hops never
+throw. So a play sent by a route the generator did not keep resolves,
+while merged hops, hops no die makes, and hops that reach a candidate's
+position without being a play of the roll do not — the difference from
+`IsLegalPlay`, which asks identity alone. No hops describe the pass, which
+resolves only when it is the only play. The hops are `Hop` values: a
+source (1–24, or 25 the bar) and a landing point (1–24, or 0 off), refused
+out of range by the constructor, with `Hop.TryCreate` the non-throwing
+form, and no way to write a hit mark — hits are the board's. A hop's
+equality is its two points, which is not play identity. See Architecture
+for the design.
+
 Apply/undo at the move level are instance methods on `BoardState`
 (defined in BgDataTypes_Lib): `state.ApplyMove(move)` /
 `state.UndoMove(move)`. `MoveGenerator` does not expose move-level
@@ -600,7 +712,8 @@ Stateful one-click `Play` assembly. Anchored on
 `MoveGenerator.GeneratePlays` as the legality reference, but
 **by reachable board state, not by literal move-lists** — see
 Architecture and Pitfalls below. Consumed by BgDiag_Razor's
-`BackgammonPlayEntry`. Public surface, complete:
+`BackgammonPlayEntry`. Its batch form, for a play received whole as hops,
+is `MoveGenerator.ResolvePlay`. Public surface, complete:
 
 - `MoveEntryState(BoardPosition initial, int die1, int die2)` — the one
   way in: the entry state only reads its start, so it takes the position
@@ -831,9 +944,18 @@ int get_version();
   loaded; the absolute figures are E-core figures, so compare only runs
   pinned alike. Whether placement accounts for the older 1.6x runs above has
   not been tested.
-- **`IsLegalPlay` and `ApplyPlay` are not hot-path.** Both re-enumerate
-  via `GeneratePlays`. Acceptable for turn-boundary validation; for
-  inner-loop repeated checks, drive the generator directly.
+- **`IsLegalPlay`, `ApplyPlay` and `ResolvePlay` are not hot-path.** All
+  three re-enumerate via `GeneratePlays`. Acceptable for turn-boundary
+  validation; for inner-loop repeated checks, drive the generator directly.
+- **`ResolvePlay` is conformance; `IsLegalPlay` is identity.** Received
+  hops are not validated with `IsLegalPlay`: any play reaching a
+  candidate's position passes it, merged or made with dice the roll does
+  not have (`13/9 9/6` with 6-1). Nor is `ResolvePlay` "fixed" by matching
+  hop lists against the candidates, which fails every route the generator
+  did not keep, or by dropping its hop count, which lets a play short of
+  the roll's dice through where it reaches a candidate's position
+  (`3/off` with 5-1 from a lone checker on the 3-point). See the
+  ResolvePlay architecture section.
 - **`MoveEntryState` legality is state-based, not move-list-based.** Do not
   "fix" entry by making `GeneratePlays` emit both die orderings of a combined
   move — one play per resulting position is correct, and RL state
@@ -864,6 +986,7 @@ int get_version();
 - Extend the `Optimized_MatchesReference` harness with more positions: bar
   entry with and without blockers, late-bear-off edge cases, near-blocked
   positions, contact/race transitions.
-- Wording polish in this doc: the Pitfalls bullet "**`IsLegalPlay` and
-  `ApplyPlay` are not hot-path**" uses "hot-path" as a predicate adjective —
-  a minor predicate/prenominal distinction. Future polish candidate.
+- Wording polish in this doc: the Pitfalls bullet "**`IsLegalPlay`,
+  `ApplyPlay` and `ResolvePlay` are not hot-path**" uses "hot-path" as a
+  predicate adjective — a minor predicate/prenominal distinction. Future
+  polish candidate.

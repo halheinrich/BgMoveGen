@@ -905,6 +905,7 @@ public class ArgumentValidationTests
         nameof(MoveGenerator.GenerateSuccessors),
         nameof(MoveGenerator.IsLegalPlay),
         nameof(MoveGenerator.ApplyPlay),
+        nameof(MoveGenerator.ResolvePlay),
     ];
 
     public static TheoryData<string> Entries => [.. StateEntries, nameof(MoveEntryState)];
@@ -950,6 +951,9 @@ public class ArgumentValidationTests
     /// <summary>A play legal on the opening board with 6-4, for the entries that take one.</summary>
     private static readonly Play OpeningSixFour = [new(24, 18), new(13, 9)];
 
+    /// <summary>That play's hops, for the entry that takes hops.</summary>
+    private static readonly Hop[] OpeningSixFourHops = [new(24, 18), new(13, 9)];
+
     private static object? Call(string entry, BoardState? state, int die1, int die2)
     {
         switch (entry)
@@ -960,6 +964,7 @@ public class ArgumentValidationTests
             case nameof(MoveGenerator.GenerateSuccessors): return MoveGenerator.GenerateSuccessors(state!, die1, die2);
             case nameof(MoveGenerator.IsLegalPlay): return MoveGenerator.IsLegalPlay(state!, OpeningSixFour, die1, die2);
             case nameof(MoveGenerator.ApplyPlay): MoveGenerator.ApplyPlay(state!, OpeningSixFour, die1, die2); return null;
+            case nameof(MoveGenerator.ResolvePlay): return MoveGenerator.ResolvePlay(state!, OpeningSixFourHops, die1, die2);
             case nameof(MoveEntryState): return new MoveEntryState(state!.ToPosition(), die1, die2);
             default: throw new ArgumentOutOfRangeException(nameof(entry), entry, "Not a public entry.");
         }
@@ -1530,5 +1535,541 @@ public class ApplyPlayValidatingTests
 
         Assert.Equal(direct.ToPosition(), state.ToPosition());
         Assert.Equal(direct.HighPointOccupied, state.HighPointOccupied);
+    }
+}
+
+public class HopTests
+{
+    [Theory]
+    [InlineData(0, 10, "from")]    // the opponent's bar is no source
+    [InlineData(26, 10, "from")]
+    [InlineData(-1, 10, "from")]
+    [InlineData(int.MinValue, 10, "from")]
+    [InlineData(13, 25, "to")]     // nor is the mover's bar a landing point
+    [InlineData(13, int.MaxValue, "to")]
+    [InlineData(26, -1, "from")]   // both out: the source is named first
+    public void Construction_RefusesANumberThatIsNoSourceOrLandingPoint_NamingIt(int from, int to, string refused)
+    {
+        var refusal = Assert.Throws<ArgumentOutOfRangeException>(() => new Hop(from, to));
+
+        Assert.Equal(refused, refusal.ParamName);
+        Assert.False(Hop.TryCreate(from, to, out var hop));
+        Assert.Equal(default, hop);
+    }
+
+    [Fact]
+    public void EverySourceAndLandingPoint_MakesAHop_AndTryCreateAgrees()
+    {
+        for (int from = 1; from <= 25; from++)
+        {
+            for (int to = 0; to <= 24; to++)
+            {
+                var hop = new Hop(from, to);
+
+                Assert.Equal((from, to), (hop.From, hop.To));
+                Assert.True(Hop.TryCreate(from, to, out var tried));
+                Assert.Equal(hop, tried);
+            }
+        }
+    }
+
+    [Fact]
+    public void AHitMarkCannotBeWritten()
+    {
+        // halheinrich/backgammon#273, ruling C: the input representation
+        // cannot express a hit mark. A Move marks one by negating its landing
+        // point; a hop's landing point is 0-24, so every negated landing point
+        // is refused, and a hop's state is its two points and nothing else —
+        // no member a mark could be added through.
+        for (int to = -24; to <= -1; to++)
+        {
+            int landing = to;
+            Assert.Throws<ArgumentOutOfRangeException>(() => new Hop(13, landing));
+            Assert.False(Hop.TryCreate(13, landing, out _));
+        }
+
+        (string, Type)[] twoPoints = [(nameof(Hop.From), typeof(int)), (nameof(Hop.To), typeof(int))];
+        var state = typeof(Hop).GetProperties().OrderBy(p => p.Name).Select(p => (p.Name, p.PropertyType));
+        Assert.Equal(twoPoints, state);
+    }
+
+    [Fact]
+    public void EqualityIsTheTwoPoints_AndAHopDeconstructsIntoThem()
+    {
+        Assert.Equal(new Hop(13, 10), new Hop(13, 10));
+        Assert.NotEqual(new Hop(13, 10), new Hop(13, 11));
+        Assert.NotEqual(new Hop(13, 10), new Hop(12, 10));
+
+        var (from, to) = new Hop(25, 22);
+        Assert.Equal((25, 22), (from, to));
+    }
+
+    [Fact]
+    public void AHopDescribesTheMoveLandingOnItsPoint_MarkedOrNot()
+    {
+        var hop = new Hop(13, 8);
+
+        Assert.True(hop.Describes(new Move(13, 8)));
+        Assert.True(hop.Describes(new Move(13, -8)));
+        Assert.False(hop.Describes(new Move(13, 9)));
+        Assert.False(hop.Describes(new Move(13, -9)));
+        Assert.False(hop.Describes(new Move(12, 8)));
+        Assert.True(new Hop(6, 0).Describes(new Move(6, 0)));
+        Assert.False(new Hop(6, 0).Describes(new Move(6, 1)));
+        Assert.True(new Hop(25, 20).Describes(new Move(25, -20)));
+    }
+}
+
+public class ResolvePlayTests
+{
+    /// <summary>
+    /// halheinrich/backgammon#304's board: a lone checker of the mover's on
+    /// 13, points 10 and 11 empty, an opposing blot on 8, and opposing pairs
+    /// on 19, 20 and 24.
+    /// </summary>
+    private static BoardState ProbeBoard()
+    {
+        var mop = new int[26];
+        mop[13] = 1;
+        mop[8] = -1;
+        mop[19] = -2;
+        mop[20] = -2;
+        mop[24] = -2;
+        return BoardState.FromMop(mop);
+    }
+
+    [Theory]
+    [InlineData(10)]   // 13/10 10/8: the route the generator does not keep — the probe
+    [InlineData(11)]   // 13/11 11/8: the generator's own route — the control
+    public void EitherRouteOfAHittingPlay_InEitherOrder_ResolvesToTheOneCandidate_WhichHits(int via)
+    {
+        // halheinrich/backgammon#304's first probe. With 3-2 both routes are
+        // legal and reach one position, so the generator keeps one, 13/11 11/8*.
+        // A reply by the other route must resolve to it, not to nothing — and
+        // to the candidate itself, its route and its hit mark, not to a play
+        // spelled from the hops.
+        var state = ProbeBoard();
+        var candidate = Assert.Single(MoveGenerator.GeneratePlays(state, 3, 2));
+        Assert.True(candidate.IsSameEncoding([new(13, 11), new(11, -8)]), PlayText.Raw(candidate));
+
+        foreach (var order in Orders([new(13, via), new(via, 8)]))
+        {
+            var resolved = Assert.NotNull(MoveGenerator.ResolvePlay(state, order, 3, 2));
+
+            Assert.True(resolved.IsSameEncoding(candidate), PlayText.Raw(resolved));
+        }
+
+        var after = Replay.PositionAfter(state, candidate);
+        Assert.Equal(-1, after[0]);   // the blot is on the opponent's bar
+        Assert.Equal(1, after[8]);
+    }
+
+    [Theory]
+    [InlineData(12)]   // 13/12 12/6: the generator's own route — the control
+    [InlineData(7)]    // 13/7 7/6: the other route of the same play
+    public void TheRollsOwnHops_ResolveToTheCandidate(int via)
+    {
+        var state = ProbeBoard();
+        var candidate = Assert.Single(MoveGenerator.GeneratePlays(state, 6, 1));
+
+        var resolved = Assert.NotNull(MoveGenerator.ResolvePlay(state, [new(13, via), new(via, 6)], 6, 1));
+
+        Assert.True(resolved.IsSameEncoding(candidate), PlayText.Raw(resolved));
+    }
+
+    [Fact]
+    public void HopsNoDieOfTheRollProduces_ResolveToNone_ThoughTheyAreTheSamePlay()
+    {
+        // halheinrich/backgammon#304's second probe: with 6-1, 13/9 9/6
+        // reaches the one candidate's position, so as a play it is the same
+        // play and IsLegalPlay accepts it — play identity is the position.
+        // But a 4 and a 3 are no dice of the roll, so the hops describe no
+        // play of it. TheRollsOwnHops_ResolveToTheCandidate is the control.
+        var state = ProbeBoard();
+        Play asAPlay = [new(13, 9), new(9, 6)];
+
+        Assert.True(MoveGenerator.IsLegalPlay(state, asAPlay, 6, 1));
+        Assert.Null(MoveGenerator.ResolvePlay(state, [new(13, 9), new(9, 6)], 6, 1));
+    }
+
+    [Fact]
+    public void AMergedHop_ResolvesToNone_ThoughItIsTheSamePlay()
+    {
+        // 13/8 with 3-2 on the opening board: one hop covering both dice. As
+        // a play it is the legal 13/11 11/8 (IsLegalPlay agrees); as hops it
+        // is no single die's move. Split, it resolves.
+        var state = BoardState.Standard();
+
+        Assert.True(MoveGenerator.IsLegalPlay(state, [new(13, 8)], 3, 2));
+        Assert.Null(MoveGenerator.ResolvePlay(state, [new(13, 8)], 3, 2));
+        Assert.NotNull(MoveGenerator.ResolvePlay(state, [new(13, 11), new(11, 8)], 3, 2));
+    }
+
+    [Fact]
+    public void AMergedHopAmongADoublesHops_ResolvesToNone_EvenAtTheRightCount()
+    {
+        // 3-3 on the opening board: four hops, as many as the roll plays, but
+        // 24/18 covers two 3s — five dice in all. Split into 24/21 21/18 with
+        // the 13/10s, it is a play of the roll.
+        var state = BoardState.Standard();
+
+        Assert.Null(MoveGenerator.ResolvePlay(state, [new(24, 18), new(13, 10), new(13, 10), new(8, 5)], 3, 3));
+        Assert.NotNull(MoveGenerator.ResolvePlay(state, [new(24, 21), new(21, 18), new(13, 10), new(13, 10)], 3, 3));
+    }
+
+    [Fact]
+    public void HopsShortOfTheDiceTheRollPlays_ResolveToNone_ThoughTheyReachTheCandidatesPosition()
+    {
+        // A lone checker on the 3-point, 5-1. The 5 bears it off at once, but
+        // the 1 can be played first, so a legal play plays both: 3/2 2/off,
+        // the one candidate. 3/off reaches its position — IsLegalPlay agrees —
+        // yet is one die's move where the roll's legal plays make two.
+        var mop = new int[26];
+        mop[3] = 1;
+        mop[24] = -2;
+        var state = BoardState.FromMop(mop);
+        var candidate = Assert.Single(MoveGenerator.GeneratePlays(state, 5, 1));
+        Assert.Equal(2, candidate.Count);
+
+        Assert.True(MoveGenerator.IsLegalPlay(state, [new(3, 0)], 5, 1));
+        Assert.Null(MoveGenerator.ResolvePlay(state, [new(3, 0)], 5, 1));
+        foreach (var order in Orders([new(3, 2), new(2, 0)]))
+            Assert.True(Assert.NotNull(MoveGenerator.ResolvePlay(state, order, 5, 1)).IsSameEncoding(candidate));
+    }
+
+    [Fact]
+    public void ALoneSmallerDie_ResolvesToNone_WhereTheLargerCanBePlayed()
+    {
+        // A lone checker on 8 and the opponent's point on 1, 6-1: 8/2 then
+        // 2/1, or 8/7 then 7/1, lands on the point, so only one die can be
+        // played, and the rule makes it the larger. 8/7 is a legal single
+        // move of the 1, but no play of the roll.
+        var mop = new int[26];
+        mop[8] = 1;
+        mop[1] = -2;
+        var state = BoardState.FromMop(mop);
+        var candidate = Assert.Single(MoveGenerator.GeneratePlays(state, 6, 1));
+        Assert.True(candidate.IsSameEncoding([new(8, 2)]), PlayText.Raw(candidate));
+
+        Assert.Null(MoveGenerator.ResolvePlay(state, [new(8, 7)], 6, 1));
+        Assert.True(Assert.NotNull(MoveGenerator.ResolvePlay(state, [new(8, 2)], 6, 1)).IsSameEncoding(candidate));
+    }
+
+    [Theory]
+    [MemberData(nameof(AllRolls))]
+    public void EveryOrderOfEachCandidatesHops_ResolvesToThatCandidate_OnTheOpeningBoard(int die1, int die2)
+    {
+        // Order independence: whatever order a legal play's hops arrive in,
+        // including orders no legal sequence plays them in (21/18 before
+        // 24/21), they resolve to the one candidate — and each candidate is
+        // resolved to by its own hops, so no candidate is out of reach.
+        var state = BoardState.Standard();
+
+        foreach (var candidate in MoveGenerator.GeneratePlays(state, die1, die2))
+        {
+            foreach (var order in Orders(HopsOf(candidate)))
+            {
+                var resolved = MoveGenerator.ResolvePlay(state, order, die1, die2);
+
+                Assert.True(resolved is Play play && play.IsSameEncoding(candidate),
+                    $"{die1}-{die2}: the hops {string.Join(", ", order)} of {PlayText.Raw(candidate)} " +
+                    $"resolved to {(resolved is Play p ? PlayText.Raw(p) : "none")}.");
+            }
+        }
+    }
+
+    [Fact]
+    public void ADoubleThatCannotBePlayedInFull_ResolvesOnlyAsManyHopsAsItPlays()
+    {
+        // A lone checker on 19 and the opponent's point on 1, 6-6: 19/13 13/7,
+        // and 7/1 is blocked, so the roll plays two 6s. Those two hops resolve
+        // in either order; one, the merged 19/7, and a third hop do not.
+        var mop = new int[26];
+        mop[19] = 1;
+        mop[1] = -2;
+        var state = BoardState.FromMop(mop);
+        var candidate = Assert.Single(MoveGenerator.GeneratePlays(state, 6, 6));
+        Assert.Equal(2, candidate.Count);
+
+        foreach (var order in Orders([new(19, 13), new(13, 7)]))
+            Assert.True(Assert.NotNull(MoveGenerator.ResolvePlay(state, order, 6, 6)).IsSameEncoding(candidate));
+        Assert.Null(MoveGenerator.ResolvePlay(state, [new(19, 13)], 6, 6));
+        Assert.Null(MoveGenerator.ResolvePlay(state, [new(19, 7)], 6, 6));
+        Assert.Null(MoveGenerator.ResolvePlay(state, [new(19, 13), new(13, 7), new(7, 1)], 6, 6));
+    }
+
+    [Fact]
+    public void EnteringFromTheBar_ResolvesAsTheGeneratorPlaysIt()
+    {
+        // One checker on the bar, two on the 6-point, an opposing blot on 16,
+        // 5-4. bar/21 21/16* and bar/20 20/16* are one play, which the
+        // generator keeps by the first route; either resolves to it. The entry
+        // need not be listed first, but it must be played: two hops from the
+        // 6-point leave the checker on the bar and describe no play.
+        var mop = new int[26];
+        mop[25] = 1;
+        mop[6] = 2;
+        mop[16] = -1;
+        mop[12] = -2;
+        var state = BoardState.FromMop(mop);
+        var plays = MoveGenerator.GeneratePlays(state, 5, 4);
+        var hit = plays.Single(p => p.IsSameEncoding([new(25, 21), new(21, -16)]));
+        var enterAndMoveOn = plays.Single(p => p.IsSameEncoding([new(25, 20), new(6, 2)]));
+
+        foreach (int via in (int[])[21, 20])
+            foreach (var order in Orders([new(25, via), new(via, 16)]))
+                Assert.True(Assert.NotNull(MoveGenerator.ResolvePlay(state, order, 5, 4)).IsSameEncoding(hit));
+        Assert.True(Assert.NotNull(MoveGenerator.ResolvePlay(state, [new(6, 2), new(25, 20)], 5, 4)).IsSameEncoding(enterAndMoveOn));
+        Assert.Null(MoveGenerator.ResolvePlay(state, [new(6, 1), new(6, 2)], 5, 4));
+    }
+
+    [Fact]
+    public void BearingOffWithALargerDie_ResolvesFromTheHighestPoint_AndNotPastAHigherChecker()
+    {
+        // Checkers on 5 and 4 only, 6-5: each bears off, the 4 by the larger
+        // die once the 5 has gone — one play, in either order.
+        var fiveAndFour = new int[26];
+        fiveAndFour[5] = 1;
+        fiveAndFour[4] = 1;
+        var state = BoardState.FromMop(fiveAndFour);
+        var both = Assert.Single(MoveGenerator.GeneratePlays(state, 6, 5));
+
+        foreach (var order in Orders([new(5, 0), new(4, 0)]))
+            Assert.True(Assert.NotNull(MoveGenerator.ResolvePlay(state, order, 6, 5)).IsSameEncoding(both));
+
+        // Two on the 6-point and one on the 2, 5-4: the 2-point checker may not
+        // bear off by a larger die while the 6-point still holds one, in either
+        // order — so 6/1 2/off describes no play, and 6/2 6/1 is the one.
+        var twoSixesAndATwo = new int[26];
+        twoSixesAndATwo[6] = 2;
+        twoSixesAndATwo[2] = 1;
+        state = BoardState.FromMop(twoSixesAndATwo);
+        var fromTheSix = Assert.Single(MoveGenerator.GeneratePlays(state, 5, 4));
+
+        Assert.Null(MoveGenerator.ResolvePlay(state, [new(6, 1), new(2, 0)], 5, 4));
+        Assert.Null(MoveGenerator.ResolvePlay(state, [new(6, 2), new(2, 0)], 5, 4));
+        Assert.True(Assert.NotNull(MoveGenerator.ResolvePlay(state, [new(6, 1), new(6, 2)], 5, 4)).IsSameEncoding(fromTheSix));
+    }
+
+    [Fact]
+    public void NoHops_ResolveToThePass_OnlyWhenPassingIsTheOnlyPlay()
+    {
+        var closedOut = Boards.ClosedOut();
+        var pass = Assert.Single(MoveGenerator.GeneratePlays(closedOut, 6, 4));
+
+        var resolved = Assert.NotNull(MoveGenerator.ResolvePlay(closedOut, [], 6, 4));
+        Assert.True(resolved.IsSameEncoding(pass));
+        Assert.Equal(0, resolved.Count);
+
+        Assert.Null(MoveGenerator.ResolvePlay(BoardState.Standard(), [], 6, 4));
+        Assert.Null(MoveGenerator.ResolvePlay(closedOut, [new(25, 21)], 6, 4));
+    }
+
+    [Fact]
+    public void HopsThatAreNoPlayOfAnyRoll_ResolveToNone_NeverAnException()
+    {
+        // Well-formed hops that describe no legal play are an answer: more
+        // hops than any play has, a hop no checker makes, and the meaningless
+        // default hop.
+        var state = BoardState.Standard();
+
+        Assert.Null(MoveGenerator.ResolvePlay(state,
+            [new(24, 20), new(24, 20), new(13, 9), new(13, 9), new(8, 4)], 4, 4));
+        Assert.Null(MoveGenerator.ResolvePlay(state, [new(24, 18), new(20, 16)], 6, 4));
+        Assert.Null(MoveGenerator.ResolvePlay(state, [default, new(13, 9)], 6, 4));
+        Assert.Null(MoveGenerator.ResolvePlay(state, [new(9, 13), new(24, 18)], 6, 4));
+    }
+
+    [Fact]
+    public void TheStateIsOnlyRead_WhetherTheHopsResolveOrNot()
+    {
+        var state = ProbeBoard();
+        var before = state.ToPosition();
+        int high = state.HighPointOccupied;
+
+        Assert.NotNull(MoveGenerator.ResolvePlay(state, [new(13, 10), new(10, 8)], 3, 2));
+        Assert.Null(MoveGenerator.ResolvePlay(state, [new(13, 9), new(9, 6)], 6, 1));
+
+        Assert.Equal(before, state.ToPosition());
+        Assert.Equal(high, state.HighPointOccupied);
+    }
+
+    [Fact]
+    public void NullHops_AreRefused()
+    {
+        var refusal = Assert.Throws<ArgumentNullException>(
+            () => MoveGenerator.ResolvePlay(BoardState.Standard(), null!, 6, 4));
+
+        Assert.Equal("hops", refusal.ParamName);
+    }
+
+    [Fact]
+    public void ResolvePlay_AgreesWithTheLegalSequences_AcrossSyntheticPositions()
+    {
+        // The Strict model against the brute-force reference, on the seeded
+        // corpus's first positions and all 21 rolls. The reference lists
+        // every legal play as single-die moves (Reference_LegalSequences);
+        // with their marks set aside, their hop sets are exactly the inputs
+        // that should resolve. So:
+        //   - no hop set is the hops of legal sequences reaching two
+        //     different candidates — the premise of at most one answer,
+        //     checked over every legal sequence;
+        //   - a legal hop set resolves, in its sequence's order and reversed,
+        //     to the candidate its sequences reach;
+        //   - a near miss — one hop's landing point moved one point — resolves
+        //     exactly when it is itself a legal hop set, and then to that
+        //     set's candidate, and otherwise to none.
+        // Each resolution re-runs the generator, so the last two checks take
+        // an evenly spaced sample of a position-roll's hop sets
+        // (ResolvedPerRoll), and every one where there are few: a doubles
+        // roll on a spread board has a thousand, and resolving every set cost
+        // about 20 s a Release run when this sweep was written, against 3 s
+        // sampled.
+        foreach ((int index, int[] mop) in SyntheticPositions.Corpus(SweepSample).Index())
+        {
+            foreach ((int die1, int die2) in SyntheticPositions.AllRolls())
+            {
+                var state = BoardState.FromMop(mop);
+                var plays = MoveGenerator.GeneratePlays(state, die1, die2);
+                string where = $"Position {index} ({state.ToPosition()}) {die1}-{die2}";
+
+                // A sequence's candidate is the one reaching its position, by
+                // the tests' own replay — the association
+                // GeneratePlays_HoldsExactlyOnePlayPerLegalPosition_AcrossSyntheticPositions
+                // pins against IsSamePlay, found here without a list match per
+                // sequence.
+                var listedAt = new Dictionary<BoardPosition, int>();
+                for (int i = 0; i < plays.Count; i++)
+                    listedAt.Add(Replay.PositionAfter(state, plays[i]), i);
+
+                var legal = new Dictionary<long, (Hop[] Hops, int Candidate)>();
+                var inOrder = new List<(Hop[] Hops, int Candidate)>();
+                foreach (var sequence in MoveGenerator.Reference_LegalSequences(state, die1, die2))
+                {
+                    var hops = HopsOf(sequence);
+                    int candidate = listedAt[Replay.PositionAfter(state, sequence)];
+                    if (legal.TryGetValue(Key(hops), out var seen))
+                    {
+                        if (seen.Candidate != candidate)
+                            Assert.Fail($"{where}: the hops {string.Join(", ", hops)} are legal sequences of two " +
+                                        $"candidates, {PlayText.Raw(plays[seen.Candidate])} and {PlayText.Raw(plays[candidate])}.");
+                        continue;
+                    }
+                    legal.Add(Key(hops), (hops, candidate));
+                    inOrder.Add((hops, candidate));
+                }
+
+                int stride = Math.Max(1, inOrder.Count / ResolvedPerRoll);
+                for (int s = 0; s < inOrder.Count; s += stride)
+                {
+                    var (hops, candidate) = inOrder[s];
+                    AssertResolvesTo(state, hops, die1, die2, plays[candidate], where);
+                    AssertResolvesTo(state, [.. Enumerable.Reverse(hops)], die1, die2, plays[candidate], where);
+
+                    foreach (var miss in NearMisses(hops))
+                    {
+                        if (legal.TryGetValue(Key(miss), out var other))
+                            AssertResolvesTo(state, miss, die1, die2, plays[other.Candidate], where);
+                        else if (MoveGenerator.ResolvePlay(state, miss, die1, die2) is Play wrong)
+                            Assert.Fail($"{where}: the hops {string.Join(", ", miss)} are no legal sequence's, " +
+                                        $"but resolved to {PlayText.Raw(wrong)}.");
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The sweep's sample: the first positions of the shared seeded corpus,
+    /// bounded as the reference property sweep is, because it walks every
+    /// legal sequence.
+    /// </summary>
+    private const int SweepSample = 1_000;
+
+    /// <summary>
+    /// How many of a position-roll's legal hop sets the sweep resolves, at
+    /// least: every one when there are fewer than twice this many, an evenly
+    /// spaced sample otherwise.
+    /// </summary>
+    private const int ResolvedPerRoll = 16;
+
+    public static TheoryData<int, int> AllRolls()
+    {
+        var data = new TheoryData<int, int>();
+        foreach ((int die1, int die2) in SyntheticPositions.AllRolls())
+            data.Add(die1, die2);
+        return data;
+    }
+
+    private static void AssertResolvesTo(BoardState state, Hop[] hops, int die1, int die2, Play expected, string where)
+    {
+        var resolved = MoveGenerator.ResolvePlay(state, hops, die1, die2);
+        if (resolved is not Play play || !play.IsSameEncoding(expected))
+            Assert.Fail($"{where}: the hops {string.Join(", ", hops)} resolved to " +
+                        $"{(resolved is Play p ? PlayText.Raw(p) : "none")}, not {PlayText.Raw(expected)}.");
+    }
+
+    /// <summary>A play's moves with their hit marks set aside, in the play's order.</summary>
+    private static Hop[] HopsOf(Play play)
+    {
+        var hops = new Hop[play.Count];
+        for (int i = 0; i < play.Count; i++)
+            hops[i] = new Hop(play[i].FrPt, Math.Abs(play[i].ToPt));
+        return hops;
+    }
+
+    /// <summary>
+    /// A hop set's key for the sweep's oracle, the same for every order of
+    /// the same hops and different for different hops: the count, then each
+    /// hop as <c>From * 32 + To</c> in ascending order, ten bits apiece —
+    /// allocation-free, since the sweep keys every legal sequence.
+    /// </summary>
+    private static long Key(ReadOnlySpan<Hop> hops)
+    {
+        Span<int> packed = stackalloc int[hops.Length];
+        for (int i = 0; i < hops.Length; i++)
+            packed[i] = hops[i].From * 32 + hops[i].To;
+        packed.Sort();
+
+        long key = hops.Length;
+        foreach (int hop in packed)
+            key = key * 1024 + hop;
+        return key;
+    }
+
+    /// <summary>Every order of <paramref name="hops"/>, repeats included.</summary>
+    private static IEnumerable<Hop[]> Orders(Hop[] hops)
+    {
+        if (hops.Length <= 1)
+        {
+            yield return hops;
+            yield break;
+        }
+        for (int i = 0; i < hops.Length; i++)
+        {
+            Hop[] rest = [.. hops[..i], .. hops[(i + 1)..]];
+            foreach (var tail in Orders(rest))
+                yield return [hops[i], .. tail];
+        }
+    }
+
+    /// <summary>
+    /// <paramref name="hops"/> with one hop's landing point moved one point
+    /// either way, for each hop, where the moved point is still a landing
+    /// point.
+    /// </summary>
+    private static IEnumerable<Hop[]> NearMisses(Hop[] hops)
+    {
+        for (int i = 0; i < hops.Length; i++)
+        {
+            foreach (int step in (int[])[-1, 1])
+            {
+                if (!Hop.TryCreate(hops[i].From, hops[i].To + step, out var moved))
+                    continue;
+                var miss = (Hop[])hops.Clone();
+                miss[i] = moved;
+                yield return miss;
+            }
+        }
     }
 }
